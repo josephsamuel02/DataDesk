@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
 import { THEME } from '../constants/theme';
+import { DialogProvider } from '../components/DialogProvider';
 
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);
@@ -26,19 +27,26 @@ export default function RootLayout() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const inAuthGroup = segments[0] === '(auth)';
+
   useEffect(() => {
     if (initializing) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
-
     if (!session && !inAuthGroup) {
+      // Not logged in → always send to the login screen first
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [session, segments, initializing]);
+  }, [session, inAuthGroup, initializing]);
 
-  if (initializing) {
+  // Keep the loader visible until the user is on the correct screen. This avoids
+  // briefly flashing the Home tab (the default "/" route) before redirecting an
+  // unauthenticated user to login.
+  const needsRedirect =
+    !initializing && ((!session && !inAuthGroup) || (!!session && inAuthGroup));
+
+  if (initializing || needsRedirect) {
     return (
       <View style={styles.loader}>
         <ActivityIndicator size="large" color={THEME.colors.primary} />
@@ -49,10 +57,12 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      </Stack>
+      <DialogProvider>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        </Stack>
+      </DialogProvider>
     </GestureHandlerRootView>
   );
 }

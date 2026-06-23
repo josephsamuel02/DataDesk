@@ -4,16 +4,21 @@ import { supabase } from './supabase';
 
 export async function awardPoints(
   userId: string,
-  adTypeId: string,
+  adTypeId: string | null,
   pointsEarned: number,
 ): Promise<{ success: boolean; newTotal: number; error?: string }> {
   try {
-    // Insert transaction record
-    const { error: txError } = await supabase.from('points_transactions').insert({
+    // Only attach ad_type_id when it's a real UUID from the ad_types table.
+    // Falling back to a local numeric id would break the UUID foreign key.
+    const txPayload: Record<string, unknown> = {
       user_id: userId,
-      ad_type_id: adTypeId,
       points_earned: pointsEarned,
-    });
+    };
+    if (adTypeId) txPayload.ad_type_id = adTypeId;
+
+    const { error: txError } = await supabase
+      .from('points_transactions')
+      .insert(txPayload);
 
     if (txError) throw txError;
 

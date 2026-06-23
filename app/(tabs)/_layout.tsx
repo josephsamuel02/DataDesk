@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 import { View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { THEME } from '../../constants/theme';
 
 type IconName = keyof typeof Ionicons.glyphMap;
@@ -17,21 +18,33 @@ function TabIcon({
   return (
     <View style={styles.iconWrapper}>
       <View style={[styles.iconPill, focused && styles.iconPillActive]}>
-        <Ionicons name={focused ? name : (`${name}-outline` as IconName)} size={23} color={color} />
+        <Ionicons
+          name={focused ? name : (`${name}-outline` as IconName)}
+          size={22}
+          color={focused ? '#FFFFFF' : color}
+        />
       </View>
-      {focused && <View style={styles.activeDot} />}
     </View>
   );
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+  const bottomInset = insets.bottom;
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: THEME.colors.primary,
         tabBarInactiveTintColor: THEME.colors.textSecondary,
-        tabBarStyle: styles.tabBar,
+        tabBarStyle: [
+          styles.tabBar,
+          {
+            height: 64 + bottomInset,
+            paddingBottom: bottomInset > 0 ? bottomInset : 12,
+          },
+        ],
         tabBarLabelStyle: styles.tabLabel,
       }}
     >
@@ -80,8 +93,6 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.card,
     borderTopWidth: 1,
     borderTopColor: THEME.colors.border,
-    height: 74,
-    paddingBottom: 12,
     paddingTop: 10,
     elevation: 12,
     shadowColor: '#0F231A',
@@ -97,21 +108,16 @@ const styles = StyleSheet.create({
   iconWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 3,
   },
   iconPill: {
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-    borderRadius: 16,
+    width: 44,
+    height: 36,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: 'transparent',
   },
   iconPillActive: {
-    backgroundColor: THEME.colors.primarySurface,
-  },
-  activeDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
     backgroundColor: THEME.colors.primary,
   },
 });

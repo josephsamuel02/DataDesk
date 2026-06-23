@@ -7,13 +7,13 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   Animated,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, Profile } from '../../lib/supabase';
 import { deductPoints } from '../../lib/adService';
+import { ensureProfile } from '../../lib/profileService';
 import { rechargeData } from '../../lib/dataVendorService';
 import { THEME } from '../../constants/theme';
 import { NETWORKS, DATA_PLANS, Network } from '../../constants/networks';
@@ -22,8 +22,11 @@ import { DataPackageCard } from '../../components/DataPackageCard';
 import { PointsBadge } from '../../components/PointsBadge';
 import { ProgressBar } from '../../components/ProgressBar';
 import { Logo } from '../../components/Logo';
+import { PinModal } from '../../components/PinModal';
+import { useDialog } from '../../components/DialogProvider';
 
 export default function RedeemScreen() {
+  const dialog = useDialog();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -33,6 +36,7 @@ export default function RedeemScreen() {
   const [selectedPlan, setSelectedPlan] = useState<(typeof DATA_PLANS)[0] | null>(null);
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
+  const [pinVisible, setPinVisible] = useState(false);
 
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const [toastMsg, setToastMsg] = useState('');
@@ -40,11 +44,12 @@ export default function RedeemScreen() {
   async function loadProfile() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-    const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-    if (data) {
-      setProfile(data);
-      setPhone(data.phone_number?.replace('+234', '0') ?? '');
-    }  }
+    const prof = await ensureProfile();
+    if (prof) {
+      setProfile(prof);
+      setPhone(prof.phone_number?.replace('+234', '0') ?? '');
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -69,13 +74,14 @@ export default function RedeemScreen() {
     return null;
   }
 
-  async function handleRedeem() {
+  // Validate the form, then require the transaction PIN before charging points.
+  function handleRedeem() {
     if (!selectedNetwork) {
-      Alert.alert('Select Network', 'Please choose a network to continue.');
+      dialog.alert({ title: 'Select Network', message: 'Please choose a network to continue.', variant: 'warning' });
       return;
     }
     if (!selectedPlan) {
-      Alert.alert('Select Plan', 'Please choose a data plan to continue.');
+      dialog.alert({ title: 'Select Plan', message: 'Please choose a data plan to continue.', variant: 'warning' });
       return;
     }
     const formattedPhone = validatePhone(phone);
@@ -85,9 +91,24 @@ export default function RedeemScreen() {
     }
 
     if ((profile?.points ?? 0) < selectedPlan.points) {
-      Alert.alert('Insufficient Points', `You need ${selectedPlan.points - (profile?.points ?? 0)} more points for this plan.`);
+      dialog.alert({
+        title: 'Insufficient Points',
+        message: `You need ${selectedPlan.points - (profile?.points ?? 0)} more points for this plan.`,
+        variant: 'warning',
+      });
       return;
     }
+
+    // All good — ask for the transaction PIN (creates one on first use).
+    setPinVisible(true);
+  }
+
+  // Runs only after the PIN has been verified/created successfully.
+  async function executeRedeem() {
+    setPinVisible(false);
+    if (!selectedNetwork || !selectedPlan) return;
+    const formattedPhone = validatePhone(phone);
+    if (!formattedPhone) return;
 
     setSubmitting(true);
 
@@ -139,13 +160,17 @@ export default function RedeemScreen() {
         setSelectedPlan(null);
         setSelectedNetwork(null);
       } else {
-        Alert.alert('Recharge Failed', vendorResult.message);
+        dialog.alert({ title: 'Recharge Failed', message: vendorResult.message, variant: 'error' });
         // Re-credit points on failure
         await supabase.from('profiles').update({ points: profile?.points ?? 0 }).eq('id', user.id);
         setProfile((p) => p ? { ...p, points: p.points } : p);
       }
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Something went wrong. Please try again.');
+      dialog.alert({
+        title: 'Something went wrong',
+        message: err.message ?? 'Please try again.',
+        variant: 'error',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -308,6 +333,14 @@ export default function RedeemScreen() {
       <Animated.View style={[styles.toast, { opacity: toastOpacity }]} pointerEvents="none">
         <Text style={styles.toastText}>{toastMsg}</Text>
       </Animated.View>
+
+      {/* Transaction PIN gate */}
+      <PinModal
+        visible={pinVisible}
+        mode="auto"
+        onClose={() => setPinVisible(false)}
+        onSuccess={executeRedeem}
+      />
     </SafeAreaView>
   );
 }

@@ -4,7 +4,6 @@ export interface Network {
   color: string;
   textColor: string;
   shortCode: string;
-  emoji: string;
 }
 
 export const NETWORKS: Network[] = [
@@ -14,7 +13,6 @@ export const NETWORKS: Network[] = [
     color: '#4CAF50',
     textColor: '#FFFFFF',
     shortCode: '07',
-    emoji: '🟢',
   },
   {
     id: 'MTN',
@@ -22,7 +20,6 @@ export const NETWORKS: Network[] = [
     color: '#FFC107',
     textColor: '#1A1A2E',
     shortCode: '08',
-    emoji: '🟡',
   },
   {
     id: 'AIRTEL',
@@ -30,7 +27,6 @@ export const NETWORKS: Network[] = [
     color: '#E53935',
     textColor: '#FFFFFF',
     shortCode: '08',
-    emoji: '🔴',
   },
   {
     id: '9MOBILE',
@@ -38,7 +34,6 @@ export const NETWORKS: Network[] = [
     color: '#00897B',
     textColor: '#FFFFFF',
     shortCode: '08',
-    emoji: '🟢',
   },
 ];
 

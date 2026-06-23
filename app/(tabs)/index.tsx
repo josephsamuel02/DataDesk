@@ -6,48 +6,64 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
-  TextInput,
-  Modal,
-  Alert,
   Animated,
-  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { setStatusBarStyle } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase, Profile } from '../../lib/supabase';
 import { awardPoints } from '../../lib/adService';
+import { ensureProfile } from '../../lib/profileService';
 import { THEME } from '../../constants/theme';
 import { AD_TYPES, AdType } from '../../constants/adTypes';
-import { NETWORKS, DIRECT_PURCHASE_PLANS, Network } from '../../constants/networks';
 import { AdCard } from '../../components/AdCard';
-import { PointsBadge } from '../../components/PointsBadge';
-import { NetworkSelector } from '../../components/NetworkSelector';
-import { Logo } from '../../components/Logo';
-
-// Points needed for next free data tier
-const NEXT_MILESTONE = 50;
+import { useDialog } from '../../components/DialogProvider';
+import { Avatar } from '../../components/Avatar';
 
 // Skeleton loader block
 function Skeleton({ width, height, style }: { width: number | string; height: number; style?: object }) {
-  const opacity = useRef(new Animated.Value(0.3)).current;
+  const opacity = useRef(new Animated.Value(0.4)).current;
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.7, duration: 700, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 0.3, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.8, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.4, duration: 700, useNativeDriver: true }),
       ]),
     ).start();
   }, []);
   return (
     <Animated.View
-      style={[{ width, height, borderRadius: 8, backgroundColor: THEME.colors.skeleton, opacity }, style]}
+      style={[{ width, height, borderRadius: 12, backgroundColor: THEME.colors.skeleton, opacity }, style]}
     />
+  );
+}
+
+interface QuickActionProps {
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  surface: string;
+  label: string;
+  subtitle: string;
+  onPress: () => void;
+}
+
+function QuickAction({ icon, color, surface, label, subtitle, onPress }: QuickActionProps) {
+  return (
+    <TouchableOpacity style={styles.quickAction} onPress={onPress} activeOpacity={0.8}>
+      <View style={[styles.quickActionIcon, { backgroundColor: surface }]}>
+        <Ionicons name={icon} size={22} color={color} />
+      </View>
+      <Text style={styles.quickActionLabel} numberOfLines={1}>{label}</Text>
+      <Text style={styles.quickActionSub} numberOfLines={1}>{subtitle}</Text>
+    </TouchableOpacity>
   );
 }
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const dialog = useDialog();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -55,7 +71,7 @@ export default function HomeScreen() {
   const [toastMessage, setToastMessage] = useState('');
   const toastOpacity = useRef(new Animated.Value(0)).current;
 
-  // Light status bar icons while the green hero is on screen
+  // Light status bar icons while the navy header is on screen
   useFocusEffect(
     useCallback(() => {
       setStatusBarStyle('light');
@@ -63,24 +79,13 @@ export default function HomeScreen() {
     }, []),
   );
 
-  // Buy data section state
-  const [selectedNetwork, setSelectedNetwork] = useState<Network | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<string>('');
-  const [buyPhone, setBuyPhone] = useState('');
-
   async function loadProfile() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
+    const prof = await ensureProfile();
+    if (prof) setProfile(prof);
 
-    if (data) setProfile(data);
-
-    // Fetch today's points earned
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const { data: txData } = await supabase
@@ -125,22 +130,28 @@ export default function HomeScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // Find matching ad_type in DB (using local fallback mapping by name)
-    const { data: adTypeRow } = await supabase
+    // Resolve the real ad_types UUID by name. If it isn't found (table not
+    // seeded / name mismatch), pass null instead of the local numeric id —
+    // the DB column is a UUID FK and a value like "1" would be rejected.
+    const { data: adTypeRows } = await supabase
       .from('ad_types')
       .select('id')
       .eq('name', adType.name)
-      .single();
+      .limit(1);
 
-    const adTypeId = adTypeRow?.id ?? adType.id.toString();
+    const adTypeId = adTypeRows?.[0]?.id ?? null;
 
     const result = await awardPoints(user.id, adTypeId, adType.points);
     if (result.success) {
-      setProfile((prev) => prev ? { ...prev, points: result.newTotal } : prev);
+      setProfile((prev) => (prev ? { ...prev, points: result.newTotal } : prev));
       setTodayPoints((prev) => prev + adType.points);
       showToast(`🎉 You earned ${adType.points} point${adType.points !== 1 ? 's' : ''}! Keep going on Data Desk!`);
     } else {
-      Alert.alert('Error', result.error ?? 'Could not award points. Try again.');
+      dialog.alert({
+        title: 'Something went wrong',
+        message: result.error ?? 'Could not award points. Try again.',
+        variant: 'error',
+      });
     }
   }
 
@@ -150,313 +161,377 @@ export default function HomeScreen() {
       ? profile.email.split('@')[0]
       : 'there';
 
+  const points = profile?.points ?? 0;
+
   const nextMilestoneTarget = (() => {
-    const pts = profile?.points ?? 0;
-    if (pts < 50) return 50;
-    if (pts < 100) return 100;
-    if (pts < 180) return 180;
-    if (pts < 400) return 400;
+    if (points < 50) return 50;
+    if (points < 100) return 100;
+    if (points < 180) return 180;
+    if (points < 400) return 400;
     return 700;
   })();
 
+  const initial = (profile?.username ?? profile?.email ?? 'D')[0]?.toUpperCase();
+
   return (
-    <SafeAreaView style={styles.safe} edges={['left', 'right']}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={[THEME.colors.primary]}
-            tintColor={THEME.colors.primary}
-          />
-        }
-      >
-        {/* ── HERO HEADER ──────────────────────────────────── */}
-        <View style={[styles.hero, { paddingTop: insets.top + 14 }]}>
-          <View style={styles.heroDecorLg} pointerEvents="none" />
-          <View style={styles.heroDecorSm} pointerEvents="none" />
-          <View style={styles.topBar}>
-            <View>
-              <View style={styles.brandRow}>
-                <Logo size={24} variant="light" />
-                <Text style={styles.brandName}>Data Desk</Text>
-              </View>
-              {loading ? (
-                <Skeleton width={130} height={20} style={{ backgroundColor: 'rgba(255,255,255,0.3)' }} />
-              ) : (
-                <Text style={styles.greeting}>Hi {greetingName} 👋</Text>
-              )}
-              <Text style={styles.heroTagline}>Your Data, Your Way</Text>
-            </View>
-            {loading ? (
-              <Skeleton width={92} height={38} style={{ borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.3)' }} />
-            ) : (
-              <PointsBadge points={profile?.points ?? 0} size="medium" />
-            )}
-          </View>
-        </View>
+    <View style={styles.root}>
+      {/* Navy status bar backdrop */}
+      <View style={[styles.statusBackdrop, { height: insets.top }]} />
 
-        {/* ── QUICK STATS (overlaps hero) ──────────────────── */}
-        <View style={styles.statsBar}>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Today</Text>
-            <Text style={styles.statValue}>{todayPoints} pts</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Total points</Text>
-            <Text style={[styles.statValue, { color: THEME.colors.primary }]}>
-              {profile?.points ?? 0} pts
-            </Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Next reward</Text>
-            <Text style={[styles.statValue, { color: THEME.colors.success }]}>
-              {nextMilestoneTarget} pts
-            </Text>
-          </View>
-        </View>
-
-        {/* ── AD SECTION (DOMINANT) ─────────────────────────  */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Watch Ads, Earn Points</Text>
-          <Text style={styles.sectionSubtitle}>
-            Earn points then redeem for free data — it's that simple!
-          </Text>
-        </View>
-
-        <View style={styles.adsContainer}>
-          {loading ? (
-            [1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} width="100%" height={140} style={{ marginBottom: 12, borderRadius: 16 }} />
-            ))
-          ) : (
-            AD_TYPES.map((adType) => (
-              <AdCard
-                key={adType.id}
-                adType={adType}
-                userPoints={profile?.points ?? 0}
-                nextMilestone={nextMilestoneTarget}
-                onAdComplete={handleAdComplete}
-              />
-            ))
-          )}
-        </View>
-
-        {/* ── BUY DATA SECTION (secondary) ─────────────────── */}
-        <View style={styles.buySection}>
-          <Text style={styles.buySectionTitle}>Buy Data Directly</Text>
-          <Text style={styles.buySectionSubtitle}>
-            Skip the ads and buy data instantly
-          </Text>
-
-          <View style={styles.buyCard}>
-            {/* Network selector */}
-            <Text style={styles.buyFieldLabel}>Select Network</Text>
-            <NetworkSelector
-              selected={selectedNetwork?.id ?? null}
-              onSelect={(n) => {
-                setSelectedNetwork(n);
-                setSelectedPlan('');
-              }}
+      <SafeAreaView style={styles.safe} edges={['left', 'right']}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[styles.content, { paddingTop: insets.top + 8 }]}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[THEME.colors.primary]}
+              tintColor={THEME.colors.primary}
             />
-
-            {/* Plan selector */}
-            {selectedNetwork && (
-              <>
-                <Text style={[styles.buyFieldLabel, { marginTop: 12 }]}>Select Plan</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.planRow}>
-                    {DIRECT_PURCHASE_PLANS.map((plan) => (
-                      <TouchableOpacity
-                        key={plan.id}
-                        style={[
-                          styles.planChip,
-                          selectedPlan === plan.id && styles.planChipSelected,
-                        ]}
-                        onPress={() => setSelectedPlan(plan.id)}
-                      >
-                        <Text
-                          style={[
-                            styles.planChipLabel,
-                            selectedPlan === plan.id && styles.planChipLabelSelected,
-                          ]}
-                        >
-                          {plan.label}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.planChipPrice,
-                            selectedPlan === plan.id && styles.planChipPriceSelected,
-                          ]}
-                        >
-                          ₦{plan.price}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-              </>
-            )}
-
-            {/* Phone number */}
-            <Text style={[styles.buyFieldLabel, { marginTop: 12 }]}>Phone Number</Text>
-            <View style={styles.phoneInputRow}>
-              <Text style={styles.phoneFlag}>🇳🇬</Text>
-              <TextInput
-                style={styles.phoneInput}
-                placeholder="e.g. 08012345678"
-                placeholderTextColor={THEME.colors.textSecondary}
-                keyboardType="phone-pad"
-                value={buyPhone}
-                onChangeText={setBuyPhone}
-              />
+          }
+        >
+          {/* ── HEADER ───────────────────────────────────────── */}
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <Avatar value={profile?.avatar_url} size={46} initial={initial} />
+              <View>
+                {loading ? (
+                  <Skeleton width={140} height={18} />
+                ) : (
+                  <Text style={styles.greeting}>Hello, {greetingName}! 👋</Text>
+                )}
+                <Text style={styles.greetingSub}>Welcome to Data Desk</Text>
+              </View>
             </View>
-
             <TouchableOpacity
-              style={[
-                styles.buyBtn,
-                (!selectedNetwork || !selectedPlan || buyPhone.length < 10) && styles.buyBtnDisabled,
-              ]}
-              activeOpacity={0.85}
-              onPress={() =>
-                Alert.alert(
-                  '💳 Buy Data',
-                  `Purchase ${selectedPlan} on ${selectedNetwork?.name} for ${buyPhone}?\n\nPayment integration coming soon.`,
-                )
-              }
-              disabled={!selectedNetwork || !selectedPlan || buyPhone.length < 10}
+              style={styles.bellBtn}
+              activeOpacity={0.8}
+              onPress={() => dialog.alert({ title: 'Notifications', message: 'You have no new notifications right now.', variant: 'info' })}
             >
-              <Text style={styles.buyBtnText}>Buy Now</Text>
+              <Ionicons name="notifications-outline" size={22} color={THEME.colors.primary} />
+              <View style={styles.bellDot} />
             </TouchableOpacity>
           </View>
-        </View>
 
-        {/* Bottom spacing */}
-        <View style={{ height: 24 }} />
-      </ScrollView>
+          {/* ── POINTS BALANCE CARD ──────────────────────────── */}
+          <TouchableOpacity
+            activeOpacity={0.95}
+            onPress={() => router.push('/(tabs)/redeem')}
+            style={styles.balanceCard}
+          >
+            <View style={styles.balanceDecorLg} pointerEvents="none" />
+            <View style={styles.balanceDecorSm} pointerEvents="none" />
+
+            <View style={styles.balanceContent}>
+              <View style={styles.balanceTopRow}>
+                <Text style={styles.balanceLabel}>Your Points Balance</Text>
+                <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.7)" />
+              </View>
+
+              {loading ? (
+                <Skeleton width={150} height={40} style={{ backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 6 }} />
+              ) : (
+                <View style={styles.balanceAmountRow}>
+                  <Text style={styles.balanceAmount}>{points.toLocaleString()}</Text>
+                  <View style={styles.coinBadge}>
+                    <Text style={styles.coinStar}>⭐</Text>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.balanceWorth}>≈ ₦{points.toLocaleString()} worth of data</Text>
+
+              <TouchableOpacity
+                style={styles.redeemBtn}
+                activeOpacity={0.9}
+                onPress={() => router.push('/(tabs)/redeem')}
+              >
+                <Text style={styles.redeemBtnText}>Redeem Data</Text>
+                <Ionicons name="arrow-forward" size={16} color={THEME.colors.primary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Gift illustration */}
+            <Text style={styles.giftEmoji}>🎁</Text>
+          </TouchableOpacity>
+
+          {/* ── EARN POINTS ──────────────────────────────────── */}
+          <View style={styles.sectionHeaderRow}>
+            <View style={styles.sectionHeaderText}>
+              <Text style={styles.sectionTitle}>Earn Points</Text>
+              <Text style={styles.sectionSubtitle}>Watch ads and earn points to get free data</Text>
+            </View>
+            <View style={styles.adsAvailable}>
+              <View style={styles.adsDot} />
+              <Text style={styles.adsAvailableText}>{AD_TYPES.length} ads available</Text>
+            </View>
+          </View>
+
+          <View style={styles.adsContainer}>
+            {loading
+              ? [1, 2, 3, 4].map((i) => (
+                  <Skeleton key={i} width="100%" height={78} style={{ marginBottom: 12, borderRadius: 20 }} />
+                ))
+              : AD_TYPES.map((adType) => (
+                  <AdCard
+                    key={adType.id}
+                    adType={adType}
+                    userPoints={points}
+                    nextMilestone={nextMilestoneTarget}
+                    onAdComplete={handleAdComplete}
+                  />
+                ))}
+          </View>
+
+          {/* ── QUICK ACTIONS ────────────────────────────────── */}
+          <Text style={[styles.sectionTitle, { marginBottom: 14 }]}>Quick Actions</Text>
+          <View style={styles.quickRow}>
+            <QuickAction
+              icon="swap-vertical"
+              color={THEME.category.green.color}
+              surface={THEME.category.green.surface}
+              label="Buy Data"
+              subtitle="Pay & Get Data"
+              onPress={() => dialog.alert({ title: 'Buy Data', message: 'Direct data purchase is coming soon to Data Desk!', variant: 'info' })}
+            />
+            <QuickAction
+              icon="phone-portrait-outline"
+              color={THEME.category.blue.color}
+              surface={THEME.category.blue.surface}
+              label="Redeem Data"
+              subtitle="Use Points"
+              onPress={() => router.push('/(tabs)/redeem')}
+            />
+            <QuickAction
+              icon="time-outline"
+              color={THEME.category.purple.color}
+              surface={THEME.category.purple.surface}
+              label="History"
+              subtitle="View Activity"
+              onPress={() => router.push('/(tabs)/history')}
+            />
+            <QuickAction
+              icon="gift-outline"
+              color={THEME.category.orange.color}
+              surface={THEME.category.orange.surface}
+              label="Refer & Earn"
+              subtitle="Invite Friends"
+              onPress={() => dialog.alert({ title: 'Refer & Earn', message: 'Referrals are coming soon — invite friends to Data Desk!', variant: 'info' })}
+            />
+          </View>
+
+          {/* ── REFERRAL BANNER ──────────────────────────────── */}
+          <View style={styles.referralCard}>
+            <View style={styles.balanceDecorSm} pointerEvents="none" />
+            <Text style={styles.referralGift}>🎁</Text>
+            <View style={styles.referralText}>
+              <Text style={styles.referralTitle}>Invite friends & earn more points!</Text>
+              <Text style={styles.referralSub}>
+                You get <Text style={styles.referralBold}>200 points</Text>, they get{' '}
+                <Text style={styles.referralBold}>100 points</Text>
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.inviteBtn}
+              activeOpacity={0.9}
+              onPress={() => dialog.alert({ title: 'Invite Now', message: 'Referrals are coming soon to Data Desk!', variant: 'info' })}
+            >
+              <Text style={styles.inviteBtnText}>Invite</Text>
+              <Ionicons name="arrow-forward" size={14} color={THEME.colors.primary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ height: 24 }} />
+        </ScrollView>
+      </SafeAreaView>
 
       {/* Toast notification */}
-      <Animated.View
-        style={[styles.toast, { opacity: toastOpacity }]}
-        pointerEvents="none"
-      >
+      <Animated.View style={[styles.toast, { opacity: toastOpacity }]} pointerEvents="none">
         <Text style={styles.toastText}>{toastMessage}</Text>
       </Animated.View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
+  root: { flex: 1, backgroundColor: THEME.colors.background },
+  statusBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     backgroundColor: THEME.colors.background,
   },
+  safe: { flex: 1 },
   scroll: { flex: 1 },
   content: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 18,
   },
 
-  // Hero header
-  hero: {
+  // Header
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  avatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 2,
+    borderColor: THEME.colors.primary,
+  },
+  avatarPlaceholder: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: THEME.colors.primary,
-    marginHorizontal: -16,
-    marginTop: -12,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 46,
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarInitial: {
+    color: '#FFFFFF',
+    fontSize: THEME.fontSize.lg,
+    fontWeight: THEME.fontWeight.bold,
+  },
+  greeting: {
+    fontSize: THEME.fontSize.md,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: THEME.colors.text,
+  },
+  greetingSub: {
+    fontSize: THEME.fontSize.sm,
+    color: THEME.colors.textSecondary,
+    marginTop: 1,
+  },
+  bellBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: THEME.colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...THEME.shadow.small,
+  },
+  bellDot: {
+    position: 'absolute',
+    top: 10,
+    right: 11,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: THEME.colors.error,
+    borderWidth: 1.5,
+    borderColor: THEME.colors.card,
+  },
+
+  // Balance card
+  balanceCard: {
+    backgroundColor: THEME.colors.primary,
+    borderRadius: THEME.borderRadius.card,
+    padding: 22,
+    marginBottom: 26,
     overflow: 'hidden',
+    flexDirection: 'row',
+    alignItems: 'center',
     ...THEME.shadow.large,
   },
-  heroDecorLg: {
+  balanceDecorLg: {
     position: 'absolute',
     top: -50,
-    right: -40,
-    width: 170,
-    height: 170,
-    borderRadius: 85,
-    backgroundColor: 'rgba(255,255,255,0.10)',
+    right: -30,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
-  heroDecorSm: {
+  balanceDecorSm: {
     position: 'absolute',
-    bottom: -30,
-    left: -25,
+    bottom: -50,
+    right: 40,
     width: 130,
     height: 130,
     borderRadius: 65,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
-  topBar: {
+  balanceContent: {
+    flex: 1,
+    gap: 4,
+  },
+  balanceTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  balanceLabel: {
+    fontSize: THEME.fontSize.sm,
+    color: 'rgba(255,255,255,0.8)',
+    fontWeight: THEME.fontWeight.medium,
+  },
+  balanceAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginVertical: 2,
+  },
+  balanceAmount: {
+    fontSize: THEME.fontSize.hero,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: '#FFFFFF',
+  },
+  coinBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: THEME.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coinStar: { fontSize: 16 },
+  balanceWorth: {
+    fontSize: THEME.fontSize.sm,
+    color: 'rgba(255,255,255,0.75)',
+    marginBottom: 12,
+  },
+  redeemBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.borderRadius.button,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+  },
+  redeemBtnText: {
+    color: THEME.colors.primary,
+    fontWeight: THEME.fontWeight.bold,
+    fontSize: THEME.fontSize.base,
+  },
+  giftEmoji: {
+    fontSize: 76,
+    marginLeft: 6,
+  },
+
+  // Section headers
+  sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+    marginBottom: 14,
   },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 4,
-  },
-  brandIcon: { fontSize: 20 },
-  brandName: {
-    fontSize: THEME.fontSize.lg,
-    fontWeight: THEME.fontWeight.extraBold,
-    color: '#FFFFFF',
-  },
-  greeting: {
-    fontSize: THEME.fontSize.xl,
-    fontWeight: THEME.fontWeight.extraBold,
-    color: '#FFFFFF',
-  },
-  heroTagline: {
-    fontSize: THEME.fontSize.sm,
-    color: 'rgba(255,255,255,0.85)',
-    marginTop: 3,
-  },
-
-  // Stats bar (overlaps hero)
-  statsBar: {
-    flexDirection: 'row',
-    backgroundColor: THEME.colors.card,
-    borderRadius: THEME.borderRadius.card,
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-    marginTop: -28,
-    marginBottom: 24,
-    alignItems: 'center',
-    ...THEME.shadow.medium,
-  },
-  statItem: {
+  sectionHeaderText: {
     flex: 1,
-    alignItems: 'center',
     gap: 2,
-  },
-  statDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: THEME.colors.border,
-  },
-  statLabel: {
-    fontSize: THEME.fontSize.xs,
-    color: THEME.colors.textSecondary,
-  },
-  statValue: {
-    fontSize: THEME.fontSize.base,
-    fontWeight: THEME.fontWeight.bold,
-    color: THEME.colors.text,
-  },
-
-  // Ad section
-  sectionHeader: {
-    marginBottom: 16,
-    gap: 4,
   },
   sectionTitle: {
     fontSize: THEME.fontSize.xl,
@@ -466,101 +541,107 @@ const styles = StyleSheet.create({
   sectionSubtitle: {
     fontSize: THEME.fontSize.sm,
     color: THEME.colors.textSecondary,
-    lineHeight: 20,
   },
-  adsContainer: {
-    gap: 4,
-    marginBottom: 32,
-  },
-
-  // Buy data section
-  buySection: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  buySectionTitle: {
-    fontSize: THEME.fontSize.lg,
-    fontWeight: THEME.fontWeight.bold,
-    color: THEME.colors.text,
-  },
-  buySectionSubtitle: {
-    fontSize: THEME.fontSize.sm,
-    color: THEME.colors.textSecondary,
-  },
-  buyCard: {
-    backgroundColor: THEME.colors.card,
-    borderRadius: THEME.borderRadius.card,
-    padding: 16,
-    gap: 8,
-    ...THEME.shadow.small,
-  },
-  buyFieldLabel: {
-    fontSize: THEME.fontSize.sm,
-    fontWeight: THEME.fontWeight.semiBold,
-    color: THEME.colors.text,
-  },
-  planRow: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 4,
-  },
-  planChip: {
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: THEME.colors.border,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    alignItems: 'center',
-    backgroundColor: THEME.colors.background,
-  },
-  planChipSelected: {
-    borderColor: THEME.colors.primary,
-    backgroundColor: THEME.colors.primarySurface,
-  },
-  planChipLabel: {
-    fontSize: THEME.fontSize.sm,
-    fontWeight: THEME.fontWeight.bold,
-    color: THEME.colors.text,
-  },
-  planChipLabelSelected: { color: THEME.colors.primary },
-  planChipPrice: {
-    fontSize: THEME.fontSize.xs,
-    color: THEME.colors.textSecondary,
-    marginTop: 2,
-  },
-  planChipPriceSelected: { color: THEME.colors.primary },
-  phoneInputRow: {
+  adsAvailable: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: THEME.colors.background,
-    borderRadius: THEME.borderRadius.input,
-    borderWidth: 1.5,
-    borderColor: THEME.colors.border,
-    paddingHorizontal: 14,
-    height: 50,
-    gap: 8,
-  },
-  phoneFlag: { fontSize: 18 },
-  phoneInput: {
-    flex: 1,
-    fontSize: THEME.fontSize.base,
-    color: THEME.colors.text,
-  },
-  buyBtn: {
-    backgroundColor: THEME.colors.primary,
-    borderRadius: THEME.borderRadius.button,
-    height: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
+    gap: 5,
     marginTop: 4,
   },
-  buyBtnDisabled: {
-    opacity: 0.4,
+  adsDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: THEME.colors.success,
   },
-  buyBtnText: {
-    color: '#FFFFFF',
+  adsAvailableText: {
+    fontSize: THEME.fontSize.xs,
+    color: THEME.colors.success,
+    fontWeight: THEME.fontWeight.semiBold,
+  },
+  adsContainer: {
+    marginBottom: 28,
+  },
+
+  // Quick actions
+  quickRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 26,
+  },
+  quickAction: {
+    flex: 1,
+    backgroundColor: THEME.colors.card,
+    borderRadius: THEME.borderRadius.card,
+    paddingVertical: 16,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    gap: 6,
+    ...THEME.shadow.small,
+  },
+  quickActionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickActionLabel: {
+    fontSize: THEME.fontSize.xs,
     fontWeight: THEME.fontWeight.bold,
+    color: THEME.colors.text,
+    textAlign: 'center',
+  },
+  quickActionSub: {
+    fontSize: 9.5,
+    color: THEME.colors.textSecondary,
+    textAlign: 'center',
+  },
+
+  // Referral banner
+  referralCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.colors.primary,
+    borderRadius: THEME.borderRadius.card,
+    padding: 16,
+    gap: 12,
+    overflow: 'hidden',
+    ...THEME.shadow.medium,
+  },
+  referralGift: {
+    fontSize: 40,
+  },
+  referralText: {
+    flex: 1,
+    gap: 3,
+  },
+  referralTitle: {
     fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.bold,
+    color: '#FFFFFF',
+  },
+  referralSub: {
+    fontSize: THEME.fontSize.xs,
+    color: 'rgba(255,255,255,0.8)',
+  },
+  referralBold: {
+    color: THEME.colors.accent,
+    fontWeight: THEME.fontWeight.bold,
+  },
+  inviteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FFFFFF',
+    borderRadius: THEME.borderRadius.button,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  inviteBtnText: {
+    color: THEME.colors.primary,
+    fontWeight: THEME.fontWeight.bold,
+    fontSize: THEME.fontSize.sm,
   },
 
   // Toast

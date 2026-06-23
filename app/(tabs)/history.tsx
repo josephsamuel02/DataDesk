@@ -11,8 +11,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, RechargeRequest, PointsTransaction } from '../../lib/supabase';
 import { THEME } from '../../constants/theme';
-import { NETWORKS } from '../../constants/networks';
+import { NETWORKS, Network } from '../../constants/networks';
 import { Logo } from '../../components/Logo';
+import { NetworkLogo } from '../../components/NetworkLogo';
 
 type TabType = 'recharges' | 'points';
 
@@ -33,9 +34,12 @@ function StatusBadge({ status }: { status: RechargeRequest['status'] }) {
 
 function NetworkIcon({ network }: { network: string }) {
   const n = NETWORKS.find((net) => net.id === network);
+  if (n) {
+    return <NetworkLogo id={n.id as Network['id']} size={44} />;
+  }
   return (
-    <View style={[styles.networkIcon, { backgroundColor: n?.color ?? '#6B7280' }]}>
-      <Text style={styles.networkIconText}>{n?.id?.charAt(0) ?? '?'}</Text>
+    <View style={[styles.networkIcon, { backgroundColor: '#6B7280' }]}>
+      <Text style={styles.networkIconText}>?</Text>
     </View>
   );
 }

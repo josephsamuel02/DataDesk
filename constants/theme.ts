@@ -2,52 +2,58 @@ export const THEME = {
   appName: 'Data Desk',
   tagline: 'Your Data, Your Way',
   colors: {
-    // Greens — primary brand family
-    primary: '#16A34A', // green-600, main brand
-    primaryDark: '#15803D', // green-700
-    primaryDeep: '#14532D', // green-900, deep gradient end / dark text accents
-    primaryLight: '#4ADE80', // green-400, bright spring green
-    primarySurface: '#E7F8EE', // soft green tint for selected/active surfaces
-    primarySurfaceAlt: '#F0FBF4', // even softer green wash
+    // Primary — deep navy / indigo (cards, buttons, active states)
+    primary: '#1C1C4E',
+    primaryDark: '#14143A',
+    primaryDeep: '#0E0E28',
+    primaryLight: '#3A3A7A',
+    primarySurface: '#EAEAFB', // light indigo tint for selected/active surfaces
+    primarySurfaceAlt: '#F3F3FC',
 
-    // Accent — bright spring green for CTAs / points
-    accent: '#4ADE80',
-    accentText: '#14532D', // deep green text that sits on accent
+    // Accent — gold (points)
+    accent: '#F5C518',
+    accentText: '#1A1B2E',
+    gold: '#F5C518',
+    goldSurface: '#FEF3C7',
 
     // Neutrals
-    background: '#F4FBF6', // near-white with a green tint
+    background: '#F4F5FB',
     card: '#FFFFFF',
-    text: '#0F231A', // deep forest navy
-    textSecondary: '#5F7268', // muted green-grey
-    border: '#DCEDE2', // soft green-grey border
+    text: '#1A1B2E',
+    textSecondary: '#8A8AA3',
+    border: '#ECEDF5',
     tabBar: '#FFFFFF',
-    overlay: 'rgba(8, 28, 18, 0.55)',
+    overlay: 'rgba(14, 14, 40, 0.55)',
 
     // Status
     success: '#22C55E',
+    successSurface: '#DCFCE7',
     error: '#EF4444',
-    errorSurface: '#FEF2F2',
+    errorSurface: '#FEE2E2',
     warning: '#F59E0B',
-    warningSurface: '#FFFBEB',
-    successSurface: '#F0FDF4',
+    warningSurface: '#FEF3C7',
 
     // Misc
     white: '#FFFFFF',
-    skeleton: '#E3EFE7',
+    skeleton: '#E8E9F2',
   },
-  // Tier gradients (deep → bright green) used by ad cards
-  gradients: {
-    premium: ['#15803D', '#14532D'],
-    standard: ['#16A34A', '#15803D'],
-    basic: ['#22C55E', '#16A34A'],
-    mini: ['#4ADE80', '#22C55E'],
-    brand: ['#22C55E', '#15803D'],
+
+  // Pastel category palette (ad tiers, quick actions, network icons)
+  category: {
+    purple: { color: '#8B5CF6', surface: '#EDE9FE' },
+    green: { color: '#22C55E', surface: '#DCFCE7' },
+    blue: { color: '#3B82F6', surface: '#DBEAFE' },
+    orange: { color: '#F97316', surface: '#FFEDD5' },
+    gold: { color: '#F5C518', surface: '#FEF3C7' },
+    red: { color: '#EF4444', surface: '#FEE2E2' },
   },
+
   borderRadius: {
-    card: 18,
-    button: 50,
+    card: 20,
+    button: 14,
+    pill: 50,
     input: 14,
-    badge: 22,
+    badge: 20,
     small: 10,
     xl: 26,
   },
@@ -67,7 +73,7 @@ export const THEME = {
     lg: 20,
     xl: 24,
     xxl: 30,
-    hero: 38,
+    hero: 40,
   },
   fontWeight: {
     regular: '400' as const,
@@ -78,30 +84,30 @@ export const THEME = {
   },
   shadow: {
     small: {
-      shadowColor: '#0F231A',
-      shadowOffset: { width: 0, height: 1 },
-      shadowOpacity: 0.06,
-      shadowRadius: 5,
+      shadowColor: '#1A1B2E',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 8,
       elevation: 2,
     },
     medium: {
-      shadowColor: '#0F231A',
-      shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.09,
-      shadowRadius: 12,
+      shadowColor: '#1A1B2E',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.08,
+      shadowRadius: 16,
       elevation: 4,
     },
     large: {
-      shadowColor: '#16A34A',
-      shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.28,
-      shadowRadius: 16,
-      elevation: 8,
+      shadowColor: '#1C1C4E',
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.22,
+      shadowRadius: 24,
+      elevation: 10,
     },
     glow: {
-      shadowColor: '#22C55E',
+      shadowColor: '#F5C518',
       shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.35,
+      shadowOpacity: 0.3,
       shadowRadius: 14,
       elevation: 6,
     },

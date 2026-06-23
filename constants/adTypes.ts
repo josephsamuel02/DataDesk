@@ -5,8 +5,8 @@ export interface AdType {
   durationSeconds: number;
   tier: 'premium' | 'standard' | 'basic' | 'mini';
   description: string;
-  gradientColors: string[];
-  starsCount: number;
+  iconColor: string;
+  iconSurface: string;
 }
 
 export const AD_TYPES: AdType[] = [
@@ -16,9 +16,9 @@ export const AD_TYPES: AdType[] = [
     points: 4,
     durationSeconds: 30,
     tier: 'premium',
-    description: 'Watch a full 30-second video ad',
-    gradientColors: ['#15803D', '#14532D'],
-    starsCount: 4,
+    description: 'Watch 30s video ad',
+    iconColor: '#8B5CF6',
+    iconSurface: '#EDE9FE',
   },
   {
     id: 2,
@@ -26,9 +26,9 @@ export const AD_TYPES: AdType[] = [
     points: 3,
     durationSeconds: 20,
     tier: 'standard',
-    description: 'Watch a medium video ad',
-    gradientColors: ['#16A34A', '#15803D'],
-    starsCount: 3,
+    description: 'Watch 20s video ad',
+    iconColor: '#22C55E',
+    iconSurface: '#DCFCE7',
   },
   {
     id: 3,
@@ -36,9 +36,9 @@ export const AD_TYPES: AdType[] = [
     points: 2,
     durationSeconds: 15,
     tier: 'basic',
-    description: 'Watch a standard banner ad',
-    gradientColors: ['#22C55E', '#16A34A'],
-    starsCount: 2,
+    description: 'Watch 15s video ad',
+    iconColor: '#3B82F6',
+    iconSurface: '#DBEAFE',
   },
   {
     id: 4,
@@ -46,8 +46,8 @@ export const AD_TYPES: AdType[] = [
     points: 1,
     durationSeconds: 10,
     tier: 'mini',
-    description: 'Quick mini ad — fast points!',
-    gradientColors: ['#4ADE80', '#22C55E'],
-    starsCount: 1,
+    description: 'Watch 10s ad',
+    iconColor: '#F97316',
+    iconSurface: '#FFEDD5',
   },
 ];

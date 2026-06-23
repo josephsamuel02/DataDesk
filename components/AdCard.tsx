@@ -8,9 +8,9 @@ import {
   Animated,
   Easing,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { THEME } from '../constants/theme';
 import { AdType } from '../constants/adTypes';
-import { ProgressBar } from './ProgressBar';
 
 interface AdCardProps {
   adType: AdType;
@@ -20,32 +20,14 @@ interface AdCardProps {
   disabled?: boolean;
 }
 
-const TIER_COLORS: Record<string, string> = {
-  premium: THEME.colors.primaryDeep,
-  standard: THEME.colors.primaryDark,
-  basic: THEME.colors.primary,
-  mini: THEME.colors.success,
-};
-
-export function AdCard({
-  adType,
-  userPoints,
-  nextMilestone,
-  onAdComplete,
-  disabled = false,
-}: AdCardProps) {
+export function AdCard({ adType, onAdComplete, disabled = false }: AdCardProps) {
   const [modalVisible, setModalVisible] = useState(false);
   const [countdown, setCountdown] = useState(adType.durationSeconds);
   const [watching, setWatching] = useState(false);
   const [completed, setCompleted] = useState(false);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const pressAnim = useRef(new Animated.Value(1)).current;
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stars = '⭐'.repeat(adType.starsCount);
-  const cardColor = TIER_COLORS[adType.tier];
-  const isLarge = adType.tier === 'premium';
 
   function startPulse() {
     Animated.loop(
@@ -100,13 +82,6 @@ export function AdCard({
     await onAdComplete(adType);
   }
 
-  function pressIn() {
-    Animated.spring(pressAnim, { toValue: 0.97, useNativeDriver: true }).start();
-  }
-  function pressOut() {
-    Animated.spring(pressAnim, { toValue: 1, friction: 4, useNativeDriver: true }).start();
-  }
-
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -120,69 +95,38 @@ export function AdCard({
 
   return (
     <>
-      <Animated.View style={{ transform: [{ scale: pressAnim }] }}>
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: cardColor },
-            isLarge && styles.cardLarge,
-            disabled && styles.cardDisabled,
-          ]}
-        >
-          {/* Decorative corner circles */}
-          <View style={styles.decorCircleLg} pointerEvents="none" />
-          <View style={styles.decorCircleSm} pointerEvents="none" />
+      <View style={[styles.card, disabled && styles.cardDisabled]}>
+        {/* Category icon */}
+        <View style={[styles.iconSquare, { backgroundColor: adType.iconSurface }]}>
+          <Ionicons name="play" size={22} color={adType.iconColor} />
+        </View>
 
-          {isLarge && (
-            <View style={styles.bestValueTag}>
-              <Text style={styles.bestValueText}>★ BEST VALUE</Text>
-            </View>
-          )}
-
-          {/* Top row */}
-          <View style={styles.topRow}>
-            <View style={styles.iconBubble}>
-              <Text style={styles.iconBubbleText}>{isLarge ? '🎬' : adType.tier === 'mini' ? '⚡' : '📺'}</Text>
-            </View>
-            <View style={styles.durationBadge}>
-              <Text style={styles.durationText}>⏱ {adType.durationSeconds}s</Text>
-            </View>
+        {/* Middle info */}
+        <View style={styles.info}>
+          <Text style={styles.title} numberOfLines={1}>{adType.name}</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>{adType.description}</Text>
+          <View style={styles.durationRow}>
+            <Ionicons name="time-outline" size={13} color={THEME.colors.textSecondary} />
+            <Text style={styles.durationText}>{adType.durationSeconds} sec</Text>
           </View>
+        </View>
 
-          <View style={styles.titleBlock}>
-            <Text style={styles.adName}>{adType.name}</Text>
-            <Text style={styles.stars}>
-              {stars} <Text style={styles.pointsInline}>+{adType.points} pts</Text>
-            </Text>
+        {/* Right column: points pill + Watch button */}
+        <View style={styles.right}>
+          <View style={styles.pointsPill}>
+            <Text style={styles.pointsPillText}>+{adType.points}</Text>
+            <Text style={styles.pointsStar}>⭐</Text>
           </View>
-
-          <Text style={styles.description}>{adType.description}</Text>
-
-          {/* Progress to milestone */}
-          <View style={styles.progressSection}>
-            <Text style={styles.progressLabel}>Progress to next free data</Text>
-            <ProgressBar
-              current={Math.min(userPoints, nextMilestone)}
-              target={nextMilestone}
-              color={THEME.colors.primaryLight}
-              trackColor="rgba(255,255,255,0.25)"
-              height={7}
-              showLabel={false}
-            />
-          </View>
-
           <TouchableOpacity
             style={[styles.watchBtn, disabled && styles.btnDisabled]}
             onPress={openAd}
-            onPressIn={pressIn}
-            onPressOut={pressOut}
-            activeOpacity={0.9}
+            activeOpacity={0.85}
             disabled={disabled}
           >
-            <Text style={styles.watchBtnText}>▶  Watch Now</Text>
+            <Text style={styles.watchBtnText}>Watch Now</Text>
           </TouchableOpacity>
         </View>
-      </Animated.View>
+      </View>
 
       {/* Ad watching modal */}
       <Modal
@@ -194,16 +138,18 @@ export function AdCard({
         }}
       >
         <View style={styles.modalContainer}>
-          <View style={[styles.adSimulator, { backgroundColor: cardColor }]}>
+          <View style={styles.adSimulator}>
             <View style={styles.decorCircleLg} pointerEvents="none" />
             <View style={styles.decorCircleSm} pointerEvents="none" />
 
-            {/* Simulated ad content */}
-            <Text style={styles.adSimLabel}>📱 Advertisement</Text>
+            <View style={[styles.modalIconSquare, { backgroundColor: adType.iconSurface }]}>
+              <Ionicons name="play" size={34} color={adType.iconColor} />
+            </View>
+            <Text style={styles.adSimLabel}>Advertisement</Text>
             <Text style={styles.adSimBrand}>Data Desk Presents</Text>
             <Text style={styles.adSimTitle}>{adType.name}</Text>
             <Text style={styles.adSimSubtitle}>
-              {watching ? `Your Data, Your Way\nEarning while you watch...` : ''}
+              {watching ? 'Your Data, Your Way\nEarning while you watch...' : ''}
             </Text>
 
             {/* Progress bar */}
@@ -226,13 +172,12 @@ export function AdCard({
                   You earned {adType.points} point{adType.points !== 1 ? 's' : ''}
                 </Text>
                 <TouchableOpacity style={styles.claimBtn} onPress={claimPoints} activeOpacity={0.9}>
-                  <Text style={styles.claimBtnText}>Claim {stars} {adType.points} pts</Text>
+                  <Text style={styles.claimBtnText}>Claim +{adType.points} ⭐</Text>
                 </TouchableOpacity>
               </View>
             ) : null}
           </View>
 
-          {/* Can't skip while watching */}
           {!watching && !completed && (
             <TouchableOpacity style={styles.closeBtn} onPress={() => setModalVisible(false)}>
               <Text style={styles.closeBtnText}>Close</Text>
@@ -253,125 +198,84 @@ export function AdCard({
 
 const styles = StyleSheet.create({
   card: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.colors.card,
     borderRadius: THEME.borderRadius.card,
-    padding: 18,
-    marginBottom: 14,
+    padding: 14,
+    marginBottom: 12,
     gap: 12,
-    overflow: 'hidden',
-    ...THEME.shadow.medium,
-  },
-  cardLarge: {
-    padding: 22,
-    ...THEME.shadow.large,
+    ...THEME.shadow.small,
   },
   cardDisabled: {
     opacity: 0.5,
   },
-  decorCircleLg: {
-    position: 'absolute',
-    top: -40,
-    right: -30,
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  decorCircleSm: {
-    position: 'absolute',
-    bottom: -50,
-    left: -20,
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  bestValueTag: {
-    position: 'absolute',
-    top: 14,
-    right: 0,
-    backgroundColor: THEME.colors.accent,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderTopLeftRadius: 20,
-    borderBottomLeftRadius: 20,
-  },
-  bestValueText: {
-    color: THEME.colors.accentText,
-    fontSize: THEME.fontSize.xs,
-    fontWeight: THEME.fontWeight.extraBold,
-    letterSpacing: 0.5,
-  },
-  topRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  iconBubble: {
-    width: 44,
-    height: 44,
+  iconSquare: {
+    width: 50,
+    height: 50,
     borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconBubbleText: {
-    fontSize: 22,
+  info: {
+    flex: 1,
+    gap: 2,
   },
-  durationBadge: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+  title: {
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.bold,
+    color: THEME.colors.text,
+  },
+  subtitle: {
+    fontSize: THEME.fontSize.sm,
+    color: THEME.colors.textSecondary,
+  },
+  durationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
   },
   durationText: {
-    color: '#FFFFFF',
-    fontSize: THEME.fontSize.sm,
-    fontWeight: THEME.fontWeight.bold,
-  },
-  titleBlock: {
-    gap: 3,
-  },
-  adName: {
-    fontSize: THEME.fontSize.lg,
-    fontWeight: THEME.fontWeight.extraBold,
-    color: '#FFFFFF',
-  },
-  stars: {
-    fontSize: THEME.fontSize.base,
-    marginTop: 2,
-  },
-  pointsInline: {
-    color: THEME.colors.accent,
-    fontWeight: THEME.fontWeight.extraBold,
-    fontSize: THEME.fontSize.md,
-  },
-  description: {
-    fontSize: THEME.fontSize.sm,
-    color: 'rgba(255,255,255,0.88)',
-  },
-  progressSection: {
-    gap: 6,
-  },
-  progressLabel: {
     fontSize: THEME.fontSize.xs,
-    color: 'rgba(255,255,255,0.75)',
+    color: THEME.colors.textSecondary,
+  },
+  right: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  pointsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: THEME.colors.goldSurface,
+    borderRadius: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  pointsPillText: {
+    fontSize: THEME.fontSize.sm,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: '#B45309',
+  },
+  pointsStar: {
+    fontSize: 11,
   },
   watchBtn: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: THEME.colors.primary,
     borderRadius: THEME.borderRadius.button,
-    paddingVertical: 13,
-    alignItems: 'center',
-    marginTop: 2,
-    ...THEME.shadow.small,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
   },
   btnDisabled: {
     opacity: 0.6,
   },
   watchBtnText: {
-    color: THEME.colors.primaryDark,
-    fontWeight: THEME.fontWeight.extraBold,
-    fontSize: THEME.fontSize.base,
+    color: '#FFFFFF',
+    fontWeight: THEME.fontWeight.bold,
+    fontSize: THEME.fontSize.sm,
   },
+
   // Modal
   modalContainer: {
     flex: 1,
@@ -382,8 +286,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
-    gap: 16,
+    gap: 14,
     overflow: 'hidden',
+  },
+  decorCircleLg: {
+    position: 'absolute',
+    top: -40,
+    right: -50,
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  decorCircleSm: {
+    position: 'absolute',
+    bottom: 40,
+    left: -40,
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  modalIconSquare: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
   },
   adSimLabel: {
     fontSize: THEME.fontSize.sm,
@@ -425,7 +355,7 @@ const styles = StyleSheet.create({
     width: 110,
     height: 110,
     borderRadius: 55,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
     borderWidth: 3,
     borderColor: THEME.colors.accent,
     alignItems: 'center',
@@ -458,7 +388,7 @@ const styles = StyleSheet.create({
   },
   claimBtn: {
     backgroundColor: THEME.colors.accent,
-    borderRadius: THEME.borderRadius.button,
+    borderRadius: THEME.borderRadius.pill,
     paddingHorizontal: 32,
     paddingVertical: 14,
     marginTop: 8,
@@ -470,7 +400,7 @@ const styles = StyleSheet.create({
     fontSize: THEME.fontSize.md,
   },
   cantSkipBanner: {
-    backgroundColor: 'rgba(74,222,128,0.15)',
+    backgroundColor: 'rgba(245,197,24,0.15)',
     borderTopWidth: 1,
     borderTopColor: THEME.colors.accent,
     padding: 16,

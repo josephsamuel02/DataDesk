@@ -7,23 +7,91 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
-  Image,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase, Profile } from '../../lib/supabase';
 import { THEME } from '../../constants/theme';
 import { Logo } from '../../components/Logo';
+import { PinModal } from '../../components/PinModal';
+import { hasPin } from '../../lib/pinService';
+import { ensureProfile } from '../../lib/profileService';
+import { useDialog } from '../../components/DialogProvider';
+import { Avatar } from '../../components/Avatar';
+import { AvatarPickerModal } from '../../components/AvatarPickerModal';
+
+type IoniconName = keyof typeof Ionicons.glyphMap;
+
+// Decode a base64 string into raw bytes. Uploading bytes (instead of a blob from
+// fetch(localUri)) is the reliable way to send files to Supabase Storage on React
+// Native, where fetch/blob uploads commonly fail with "Network request failed".
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_TABLE = (() => {
+  const t = new Uint8Array(256);
+  for (let i = 0; i < B64_CHARS.length; i++) t[B64_CHARS.charCodeAt(i)] = i;
+  return t;
+})();
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const clean = base64.replace(/[^A-Za-z0-9+/=]/g, '');
+  let length = clean.length * 0.75;
+  if (clean.endsWith('==')) length -= 2;
+  else if (clean.endsWith('=')) length -= 1;
+
+  const bytes = new Uint8Array(length);
+  let p = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const e1 = B64_TABLE[clean.charCodeAt(i)];
+    const e2 = B64_TABLE[clean.charCodeAt(i + 1)];
+    const e3 = B64_TABLE[clean.charCodeAt(i + 2)];
+    const e4 = B64_TABLE[clean.charCodeAt(i + 3)];
+    bytes[p++] = (e1 << 2) | (e2 >> 4);
+    if (clean.charCodeAt(i + 2) !== 61) bytes[p++] = ((e2 & 15) << 4) | (e3 >> 2);
+    if (clean.charCodeAt(i + 3) !== 61) bytes[p++] = ((e3 & 3) << 6) | e4;
+  }
+  return bytes;
+}
+
+function InfoRow({
+  icon,
+  color,
+  surface,
+  label,
+  value,
+  trailing,
+}: {
+  icon: IoniconName;
+  color: string;
+  surface: string;
+  label: string;
+  value: React.ReactNode;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <View style={styles.fieldRow}>
+      <View style={[styles.fieldBubble, { backgroundColor: surface }]}>
+        <Ionicons name={icon} size={18} color={color} />
+      </View>
+      <View style={styles.fieldContent}>
+        <Text style={styles.fieldLabel}>{label}</Text>
+        {typeof value === 'string' ? <Text style={styles.fieldValue}>{value}</Text> : value}
+      </View>
+      {trailing}
+    </View>
+  );
+}
 
 export default function ProfileScreen() {
+  const dialog = useDialog();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
 
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -35,20 +103,26 @@ export default function ProfileScreen() {
   const [totalPointsEarned, setTotalPointsEarned] = useState(0);
   const [totalDataRedeemed, setTotalDataRedeemed] = useState(0);
 
+  // Transaction PIN
+  const [pinExists, setPinExists] = useState(false);
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinModalMode, setPinModalMode] = useState<'create' | 'verify'>('create');
+  const [changingPin, setChangingPin] = useState(false);
+
   async function loadProfile() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const [profileRes, statsRes] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', user.id).single(),
+    const [prof, statsRes] = await Promise.all([
+      ensureProfile(),
       supabase.from('points_transactions').select('points_earned').eq('user_id', user.id),
     ]);
 
-    if (profileRes.data) {
-      setProfile(profileRes.data);
-      setUsername(profileRes.data.username ?? '');
-      setEmail(profileRes.data.email ?? '');
-      setPhone(profileRes.data.phone_number?.replace('+234', '0') ?? '');
+    if (prof) {
+      setProfile(prof);
+      setUsername(prof.username ?? '');
+      setEmail(prof.email ?? '');
+      setPhone(prof.phone_number?.replace('+234', '0') ?? '');
     }
 
     if (statsRes.data) {
@@ -63,6 +137,39 @@ export default function ProfileScreen() {
       .eq('status', 'completed');
 
     setTotalDataRedeemed(rechargesData?.length ?? 0);
+
+    setPinExists(await hasPin());
+  }
+
+  function openPinFlow() {
+    if (pinExists) {
+      // Changing an existing PIN: verify current first, then create a new one.
+      setChangingPin(true);
+      setPinModalMode('verify');
+    } else {
+      setChangingPin(false);
+      setPinModalMode('create');
+    }
+    setPinModalVisible(true);
+  }
+
+  function handlePinSuccess() {
+    // In the "change" flow, the first success is the verify step → switch to create.
+    if (pinModalMode === 'verify' && changingPin) {
+      setPinModalMode('create');
+      return;
+    }
+    setPinModalVisible(false);
+    const wasUpdate = pinExists;
+    setPinExists(true);
+    setChangingPin(false);
+    dialog.alert({
+      title: 'Transaction PIN',
+      message: wasUpdate
+        ? 'Your transaction PIN has been updated.'
+        : 'Your transaction PIN has been set.',
+      variant: 'success',
+    });
   }
 
   async function initialize() {
@@ -119,18 +226,52 @@ export default function ProfileScreen() {
       setPassword('');
       setConfirmPassword('');
       setEditMode(false);
-      Alert.alert('Success', 'Profile updated successfully on Data Desk!');
+      dialog.alert({
+        title: 'Profile Updated',
+        message: 'Your changes have been saved on Data Desk!',
+        variant: 'success',
+      });
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Could not update profile.');
+      dialog.alert({
+        title: 'Update Failed',
+        message: err.message ?? 'Could not update profile.',
+        variant: 'error',
+      });
     } finally {
       setSaving(false);
     }
   }
 
+  async function handleSelectPreset(presetId: string) {
+    setAvatarPickerVisible(false);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+      const value = `preset:${presetId}`;
+      const { error } = await supabase
+        .from('profiles')
+        .update({ avatar_url: value })
+        .eq('id', user.id);
+      if (error) throw error;
+      setProfile((p) => (p ? { ...p, avatar_url: value } : p));
+    } catch (err: any) {
+      dialog.alert({
+        title: 'Could not set avatar',
+        message: err.message ?? 'Please try again.',
+        variant: 'error',
+      });
+    }
+  }
+
   async function handleAvatarUpload() {
+    setAvatarPickerVisible(false);
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please allow access to your photo library.');
+      dialog.alert({
+        title: 'Permission Required',
+        message: 'Please allow access to your photo library to upload a picture.',
+        variant: 'warning',
+      });
       return;
     }
 
@@ -138,7 +279,8 @@ export default function ProfileScreen() {
       mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.7,
+      quality: 0.6,
+      base64: true,
     });
 
     if (result.canceled || !result.assets[0]) return;
@@ -149,41 +291,49 @@ export default function ProfileScreen() {
       if (!user) throw new Error('Not authenticated');
 
       const asset = result.assets[0];
-      const ext = asset.uri.split('.').pop() ?? 'jpg';
+      if (!asset.base64) throw new Error('Could not read the selected image.');
+
+      const ext = (asset.uri.split('.').pop() || 'jpg').toLowerCase().split('?')[0];
+      const contentType = asset.mimeType ?? `image/${ext === 'jpg' ? 'jpeg' : ext}`;
       const fileName = `${user.id}/avatar.${ext}`;
 
-      // Read file as blob for upload
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
+      const bytes = base64ToUint8Array(asset.base64);
 
       const { error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(fileName, blob, { upsert: true, contentType: `image/${ext}` });
+        .upload(fileName, bytes, { upsert: true, contentType });
 
       if (uploadError) throw uploadError;
 
+      // Cache-bust the public URL so the new image shows immediately
       const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
+      const publicUrl = `${urlData.publicUrl}?t=${Date.now()}`;
 
       const { error: profileError } = await supabase
         .from('profiles')
-        .update({ avatar_url: urlData.publicUrl })
+        .update({ avatar_url: publicUrl })
         .eq('id', user.id);
 
       if (profileError) throw profileError;
 
-      setProfile((p) => p ? { ...p, avatar_url: urlData.publicUrl } : p);
+      setProfile((p) => p ? { ...p, avatar_url: publicUrl } : p);
     } catch (err: any) {
-      Alert.alert('Upload Failed', err.message ?? 'Could not upload photo.');
+      dialog.alert({
+        title: 'Upload Failed',
+        message: err.message ?? 'Could not upload photo.',
+        variant: 'error',
+      });
     } finally {
       setUploading(false);
     }
   }
 
   async function handleSignOut() {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out of Data Desk?',
-      [
+    dialog.alert({
+      title: 'Sign Out',
+      message: 'Are you sure you want to sign out of Data Desk?',
+      variant: 'confirm',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Sign Out',
@@ -193,7 +343,7 @@ export default function ProfileScreen() {
           },
         },
       ],
-    );
+    });
   }
 
   if (loading) {
@@ -236,23 +386,29 @@ export default function ProfileScreen() {
           <Text style={styles.pageTitle}>My Profile</Text>
         </View>
 
-        {/* Avatar section */}
-        <View style={styles.avatarSection}>
-          <TouchableOpacity style={styles.avatarContainer} onPress={handleAvatarUpload} disabled={uploading}>
-            {profile?.avatar_url ? (
-              <Image source={{ uri: profile.avatar_url }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarInitial}>
-                  {(profile?.username ?? profile?.email ?? 'U')[0].toUpperCase()}
-                </Text>
-              </View>
-            )}
+        {/* Avatar hero */}
+        <View style={styles.heroCard}>
+          <View style={styles.heroDecorLg} pointerEvents="none" />
+          <View style={styles.heroDecorSm} pointerEvents="none" />
+
+          <TouchableOpacity
+            style={styles.avatarContainer}
+            onPress={() => setAvatarPickerVisible(true)}
+            disabled={uploading}
+            activeOpacity={0.85}
+          >
+            <Avatar
+              value={profile?.avatar_url}
+              size={72}
+              initial={(profile?.username ?? profile?.email ?? 'U')[0]}
+              borderColor="rgba(255,255,255,0.5)"
+              borderWidth={2.5}
+            />
             <View style={styles.avatarEditBadge}>
               {uploading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
+                <ActivityIndicator size="small" color={THEME.colors.primary} />
               ) : (
-                <Text style={styles.avatarEditIcon}>📷</Text>
+                <Ionicons name="camera" size={13} color={THEME.colors.primary} />
               )}
             </View>
           </TouchableOpacity>
@@ -291,34 +447,41 @@ export default function ProfileScreen() {
           </View>
 
           {/* Email (read-only primary) */}
-          <View style={styles.fieldRow}>
-            <Text style={styles.fieldIcon}>✉️</Text>
-            <View style={styles.fieldContent}>
-              <Text style={styles.fieldLabel}>Email Address</Text>
-              <Text style={styles.fieldValue}>{profile?.email ?? 'Not set'}</Text>
-            </View>
-            {profile?.email && (
-              <View style={styles.verifiedBadge}>
-                <Text style={styles.verifiedText}>✓ Verified</Text>
-              </View>
-            )}
-          </View>
+          <InfoRow
+            icon="mail"
+            color={THEME.category.blue.color}
+            surface={THEME.category.blue.surface}
+            label="Email Address"
+            value={
+              <Text style={[styles.fieldValue, styles.emailValue]} numberOfLines={1}>
+                {profile?.email ?? 'Not set'}
+              </Text>
+            }
+            trailing={
+              profile?.email ? (
+                <View style={styles.verifiedBadge}>
+                  <Ionicons name="checkmark-circle" size={14} color={THEME.colors.success} />
+                  <Text style={styles.verifiedText}>Verified</Text>
+                </View>
+              ) : undefined
+            }
+          />
 
           {/* Phone (optional — needed for recharges) */}
           {!editMode && (
-            <View style={styles.fieldRow}>
-              <Text style={styles.fieldIcon}>📱</Text>
-              <View style={styles.fieldContent}>
-                <Text style={styles.fieldLabel}>Phone Number</Text>
-                <Text style={styles.fieldValue}>
-                  {profile?.phone_number ?? (
-                    <Text style={{ color: THEME.colors.textSecondary, fontStyle: 'italic' }}>
-                      Not set — needed for data recharges
-                    </Text>
-                  )}
-                </Text>
-              </View>
-            </View>
+            <InfoRow
+              icon="call"
+              color={THEME.category.green.color}
+              surface={THEME.category.green.surface}
+              label="Phone Number"
+              value={
+                profile?.phone_number ?? (
+                  <Text style={[styles.fieldValue, styles.fieldValueMuted]}>
+                    Not set — needed for data recharges
+                  </Text>
+                )
+              }
+            />
           )}
 
           {editMode ? (
@@ -427,22 +590,13 @@ export default function ProfileScreen() {
           ) : (
             <>
               {profile?.username && (
-                <View style={styles.fieldRow}>
-                  <Text style={styles.fieldIcon}>👤</Text>
-                  <View style={styles.fieldContent}>
-                    <Text style={styles.fieldLabel}>Username</Text>
-                    <Text style={styles.fieldValue}>@{profile.username}</Text>
-                  </View>
-                </View>
-              )}
-              {profile?.email && (
-                <View style={styles.fieldRow}>
-                  <Text style={styles.fieldIcon}>✉️</Text>
-                  <View style={styles.fieldContent}>
-                    <Text style={styles.fieldLabel}>Email</Text>
-                    <Text style={styles.fieldValue}>{profile.email}</Text>
-                  </View>
-                </View>
+                <InfoRow
+                  icon="at"
+                  color={THEME.category.purple.color}
+                  surface={THEME.category.purple.surface}
+                  label="Username"
+                  value={`@${profile.username}`}
+                />
               )}
               {!profile?.username && !profile?.email && (
                 <TouchableOpacity onPress={() => setEditMode(true)}>
@@ -455,13 +609,57 @@ export default function ProfileScreen() {
           )}
         </View>
 
+        {/* Security */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Security</Text>
+          <TouchableOpacity style={styles.securityRow} onPress={openPinFlow} activeOpacity={0.7}>
+            <View style={styles.securityIcon}>
+              <Ionicons name="lock-closed" size={20} color={THEME.colors.primary} />
+            </View>
+            <View style={styles.fieldContent}>
+              <Text style={styles.fieldValue}>Transaction PIN</Text>
+              <Text style={styles.fieldLabel}>
+                {pinExists
+                  ? 'Required to authorize every purchase'
+                  : 'Set a 4-digit PIN to secure your purchases'}
+              </Text>
+            </View>
+            <View style={styles.securityAction}>
+              <Text style={styles.securityActionText}>{pinExists ? 'Change' : 'Set'}</Text>
+              <Ionicons name="chevron-forward" size={16} color={THEME.colors.primary} />
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* Sign out */}
-        <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut}>
+        <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut} activeOpacity={0.8}>
+          <Ionicons name="log-out-outline" size={20} color={THEME.colors.error} />
           <Text style={styles.signOutBtnText}>Sign Out</Text>
         </TouchableOpacity>
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      {/* Transaction PIN setup / change */}
+      <AvatarPickerModal
+        visible={avatarPickerVisible}
+        selectedValue={profile?.avatar_url}
+        onClose={() => setAvatarPickerVisible(false)}
+        onSelectPreset={handleSelectPreset}
+        onUpload={handleAvatarUpload}
+      />
+
+      <PinModal
+        visible={pinModalVisible}
+        mode={pinModalMode}
+        onClose={() => {
+          setPinModalVisible(false);
+          setChangingPin(false);
+        }}
+        onSuccess={handlePinSuccess}
+        title={pinModalMode === 'verify' ? 'Enter Current PIN' : undefined}
+        subtitle={pinModalMode === 'verify' ? 'Verify your current PIN to change it' : undefined}
+      />
     </SafeAreaView>
   );
 }
@@ -487,67 +685,91 @@ const styles = StyleSheet.create({
     color: THEME.colors.text,
   },
 
-  // Avatar
-  avatarSection: {
+  // Avatar hero
+  heroCard: {
+    backgroundColor: THEME.colors.primary,
+    borderRadius: THEME.borderRadius.xl,
+    paddingTop: 18,
+    paddingBottom: 34,
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
+    gap: 4,
+    overflow: 'hidden',
+    ...THEME.shadow.large,
   },
-  avatarContainer: { position: 'relative' },
+  heroDecorLg: {
+    position: 'absolute',
+    top: -50,
+    right: -40,
+    width: 170,
+    height: 170,
+    borderRadius: 85,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  heroDecorSm: {
+    position: 'absolute',
+    bottom: -30,
+    left: -30,
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  avatarContainer: { position: 'relative', marginBottom: 2 },
   avatar: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    borderWidth: 3,
-    borderColor: THEME.colors.primary,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 2.5,
+    borderColor: 'rgba(255,255,255,0.5)',
   },
   avatarPlaceholder: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: THEME.colors.primary,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: THEME.colors.primary,
+    borderWidth: 2.5,
+    borderColor: 'rgba(255,255,255,0.5)',
   },
   avatarInitial: {
-    fontSize: THEME.fontSize.xxl,
+    fontSize: THEME.fontSize.lg,
     fontWeight: THEME.fontWeight.extraBold,
-    color: '#FFFFFF',
+    color: THEME.colors.primary,
   },
   avatarEditBadge: {
     position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    bottom: 0,
+    right: 0,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: THEME.colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: THEME.colors.background,
+    borderColor: THEME.colors.primary,
   },
-  avatarEditIcon: { fontSize: 14 },
   profileName: {
-    fontSize: THEME.fontSize.xl,
-    fontWeight: THEME.fontWeight.bold,
-    color: THEME.colors.text,
+    fontSize: THEME.fontSize.md,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: '#FFFFFF',
   },
   memberSince: {
-    fontSize: THEME.fontSize.sm,
-    color: THEME.colors.textSecondary,
+    fontSize: THEME.fontSize.xs,
+    color: 'rgba(255,255,255,0.75)',
   },
 
-  // Stats
+  // Stats (overlaps the hero)
   statsRow: {
     flexDirection: 'row',
     backgroundColor: THEME.colors.card,
     borderRadius: THEME.borderRadius.card,
-    paddingVertical: 16,
+    paddingVertical: 14,
+    marginHorizontal: 8,
+    marginTop: -24,
     alignItems: 'center',
-    ...THEME.shadow.small,
+    ...THEME.shadow.medium,
   },
   statBox: {
     flex: 1,
@@ -555,7 +777,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   statNumber: {
-    fontSize: THEME.fontSize.xl,
+    fontSize: THEME.fontSize.lg,
     fontWeight: THEME.fontWeight.extraBold,
     color: THEME.colors.primary,
   },
@@ -604,11 +826,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingVertical: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.colors.border,
+    paddingVertical: 8,
   },
-  fieldIcon: { fontSize: 18 },
+  fieldBubble: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   fieldContent: { flex: 1, gap: 2 },
   fieldLabel: {
     fontSize: THEME.fontSize.xs,
@@ -616,19 +842,30 @@ const styles = StyleSheet.create({
   },
   fieldValue: {
     fontSize: THEME.fontSize.base,
-    fontWeight: THEME.fontWeight.medium,
+    fontWeight: THEME.fontWeight.semiBold,
     color: THEME.colors.text,
   },
+  emailValue: {
+    fontSize: THEME.fontSize.sm,
+  },
+  fieldValueMuted: {
+    color: THEME.colors.textSecondary,
+    fontWeight: THEME.fontWeight.regular,
+    fontStyle: 'italic',
+  },
   verifiedBadge: {
-    backgroundColor: '#F0FDF4',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: THEME.colors.successSurface,
     borderRadius: 20,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
   verifiedText: {
     fontSize: THEME.fontSize.xs,
     color: THEME.colors.success,
-    fontWeight: THEME.fontWeight.semiBold,
+    fontWeight: THEME.fontWeight.bold,
   },
   addInfoPrompt: {
     color: THEME.colors.primary,
@@ -709,14 +946,42 @@ const styles = StyleSheet.create({
     fontWeight: THEME.fontWeight.bold,
   },
 
+  // Security
+  securityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  securityIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: THEME.colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  securityAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  securityActionText: {
+    color: THEME.colors.primary,
+    fontWeight: THEME.fontWeight.semiBold,
+    fontSize: THEME.fontSize.sm,
+  },
+
   // Sign out
   signOutBtn: {
+    flexDirection: 'row',
+    gap: 8,
     borderWidth: 1.5,
     borderColor: THEME.colors.error,
     borderRadius: THEME.borderRadius.button,
-    height: 50,
+    height: 52,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: THEME.colors.errorSurface,
   },
   signOutBtnText: {
     color: THEME.colors.error,
