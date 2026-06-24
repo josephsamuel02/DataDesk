@@ -10,9 +10,24 @@ CREATE TABLE IF NOT EXISTS profiles (
   phone_number TEXT UNIQUE,          -- nullable: added later in Profile screen
   email TEXT,
   avatar_url TEXT,
+  country TEXT,                       -- ISO code detected at registration (e.g. 'NG'); 'OTHER'/NULL = unsupported
+  referral_code TEXT UNIQUE,         -- this user's own code to share
+  referred_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  last_daily_bonus_at DATE,          -- last date the daily login bonus was claimed
   points INTEGER DEFAULT 0 NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migrations for existing databases: add columns if the table predates them.
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES profiles(id) ON DELETE SET NULL;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS last_daily_bonus_at DATE;
+
+-- Backfill referral codes for users created before this column existed.
+UPDATE profiles
+  SET referral_code = upper(substr(md5(id::text), 1, 8))
+  WHERE referral_code IS NULL;
 
 -- ─── Auth Settings ──────────────────────────────────────────────────────────
 -- Authentication → Providers → Email: ENABLE
@@ -32,10 +47,7 @@ CREATE TABLE IF NOT EXISTS ad_types (
 
 -- 3. Seed default ad types (names MUST match constants/adTypes.ts)
 INSERT INTO ad_types (name, points_reward, duration_seconds, description) VALUES
-  ('Full Screen Video', 4, 30, 'Watch 30s video ad'),
-  ('Banner Plus', 3, 20, 'Watch 20s video ad'),
-  ('Standard Ad', 2, 15, 'Watch 15s video ad'),
-  ('Mini Ad', 1, 10, 'Watch 10s ad')
+  ('Rewarded Video Ad', 2, 30, 'Watch a short video to earn points')
 ON CONFLICT (name) DO UPDATE SET
   points_reward = EXCLUDED.points_reward,
   duration_seconds = EXCLUDED.duration_seconds,
@@ -47,8 +59,12 @@ CREATE TABLE IF NOT EXISTS points_transactions (
   user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
   ad_type_id UUID REFERENCES ad_types(id),
   points_earned INTEGER NOT NULL,
+  source TEXT DEFAULT 'ad',          -- 'ad' | 'daily_bonus' | 'referral'
   watched_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration for existing databases.
+ALTER TABLE points_transactions ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'ad';
 
 -- 5. Recharge requests (points-based)
 CREATE TABLE IF NOT EXISTS recharge_requests (
@@ -101,15 +117,36 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  ref_code  TEXT := NULLIF(NEW.raw_user_meta_data ->> 'referral_code', '');
+  my_code   TEXT := upper(substr(md5(NEW.id::text), 1, 8));
+  referrer  UUID;
 BEGIN
-  INSERT INTO public.profiles (id, email, username, points)
+  -- Resolve the referrer (if a valid code was supplied at sign-up).
+  IF ref_code IS NOT NULL THEN
+    SELECT id INTO referrer FROM public.profiles WHERE referral_code = upper(ref_code) LIMIT 1;
+  END IF;
+
+  INSERT INTO public.profiles (id, email, username, phone_number, country, referral_code, referred_by, points)
   VALUES (
     NEW.id,
     NEW.email,
     NULLIF(NEW.raw_user_meta_data ->> 'username', ''),
+    NULLIF(NEW.raw_user_meta_data ->> 'phone_number', ''),
+    NULLIF(NEW.raw_user_meta_data ->> 'country', ''),
+    my_code,
+    referrer,
     0
   )
   ON CONFLICT (id) DO NOTHING;
+
+  -- Reward the referrer with 50 points for the signup.
+  IF referrer IS NOT NULL AND referrer <> NEW.id THEN
+    UPDATE public.profiles SET points = points + 50 WHERE id = referrer;
+    INSERT INTO public.points_transactions (user_id, points_earned, source)
+    VALUES (referrer, 50, 'referral');
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -118,6 +155,45 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ─── Daily login bonus (once per calendar day, +5 points) ───────────────────
+-- SECURITY DEFINER so it can write points_transactions / profiles atomically.
+CREATE OR REPLACE FUNCTION public.claim_daily_bonus()
+RETURNS TABLE (claimed BOOLEAN, points INTEGER, awarded INTEGER)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  uid       UUID := auth.uid();
+  last_date DATE;
+  bonus     INTEGER := 5;
+  new_total INTEGER;
+BEGIN
+  IF uid IS NULL THEN
+    RETURN QUERY SELECT false, 0, 0;
+    RETURN;
+  END IF;
+
+  SELECT last_daily_bonus_at, p.points INTO last_date, new_total
+  FROM public.profiles p WHERE p.id = uid FOR UPDATE;
+
+  IF last_date = CURRENT_DATE THEN
+    RETURN QUERY SELECT false, new_total, 0;
+    RETURN;
+  END IF;
+
+  UPDATE public.profiles
+    SET points = points + bonus, last_daily_bonus_at = CURRENT_DATE
+    WHERE id = uid
+    RETURNING points INTO new_total;
+
+  INSERT INTO public.points_transactions (user_id, points_earned, source)
+  VALUES (uid, bonus, 'daily_bonus');
+
+  RETURN QUERY SELECT true, new_total, bonus;
+END;
+$$;
 
 -- Points transactions
 CREATE POLICY "Users can view own points"

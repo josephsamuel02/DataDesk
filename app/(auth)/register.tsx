@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -18,6 +19,13 @@ import { supabase } from '../../lib/supabase';
 import { THEME } from '../../constants/theme';
 import { Logo } from '../../components/Logo';
 import { AuthHero } from '../../components/AuthHero';
+import {
+  SUPPORTED_COUNTRIES,
+  OTHER_COUNTRY_CODE,
+  Country,
+  formatPhoneForCountry,
+  detectCountryFromPhone,
+} from '../../constants/countries';
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -25,14 +33,22 @@ export default function RegisterScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [referralCode, setReferralCode] = useState('');
+  const [phone, setPhone] = useState('');
+  // Default to the first supported country (Nigeria); `null` means "Other".
+  const [country, setCountry] = useState<Country | null>(SUPPORTED_COUNTRIES[0]);
+  const [countryModal, setCountryModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
   const [errors, setErrors] = useState<{
     email?: string;
     password?: string;
+    phone?: string;
     general?: string;
   }>({});
+
+  const isSupported = !!country;
 
   function validateEmail(val: string) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
@@ -43,6 +59,23 @@ export default function RegisterScreen() {
     if (!validateEmail(email)) newErrors.email = 'Enter a valid email address';
     if (password.length < 8) newErrors.password = 'Password must be at least 8 characters';
 
+    // Resolve the phone number based on the chosen country.
+    let formattedPhone: string | null = null;
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (country) {
+      if (!phoneDigits) {
+        newErrors.phone = 'Enter your phone number';
+      } else {
+        formattedPhone = formatPhoneForCountry(phone, country);
+        if (!formattedPhone) {
+          newErrors.phone = `Enter a valid ${country.name} phone number`;
+        }
+      }
+    } else if (phoneDigits) {
+      // Unsupported country — store whatever they entered, in international form.
+      formattedPhone = `+${phoneDigits}`;
+    }
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -51,23 +84,32 @@ export default function RegisterScreen() {
     setErrors({});
     setLoading(true);
 
+    const countryCode = country ? country.code : OTHER_COUNTRY_CODE;
+
     try {
       const { data, error } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
         password,
         options: {
-          data: { username: username.trim() || null },
+          data: {
+            username: username.trim() || null,
+            phone_number: formattedPhone,
+            country: countryCode,
+            referral_code: referralCode.trim().toUpperCase() || null,
+          },
         },
       });
 
       if (error) throw error;
 
       if (data.user) {
-        // Insert profile — phone_number is optional at registration
+        // Insert profile — best-effort; the DB trigger also creates the row.
         const { error: profileError } = await supabase.from('profiles').upsert({
           id: data.user.id,
           email: email.trim().toLowerCase(),
           username: username.trim() || null,
+          phone_number: formattedPhone,
+          country: countryCode,
           points: 0,
         });
 
@@ -205,6 +247,49 @@ export default function RegisterScreen() {
                 {errors.password && <Text style={styles.errorText}>{errors.password}</Text>}
               </View>
 
+              {/* Phone number with country */}
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Phone Number</Text>
+                <View style={[styles.phoneWrap, errors.phone && styles.inputError]}>
+                  <TouchableOpacity
+                    style={styles.countryBtn}
+                    onPress={() => setCountryModal(true)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.countryFlag}>{country?.flag ?? '🌍'}</Text>
+                    <Text style={styles.countryCode}>{country?.dialCode ?? '+'}</Text>
+                    <Ionicons name="chevron-down" size={14} color={THEME.colors.textSecondary} />
+                  </TouchableOpacity>
+                  <View style={styles.phoneDivider} />
+                  <TextInput
+                    style={styles.phoneInput}
+                    placeholder={country ? 'Phone number' : 'Country code + number'}
+                    placeholderTextColor={THEME.colors.textSecondary}
+                    keyboardType="phone-pad"
+                    value={phone}
+                    onChangeText={(t) => {
+                      setPhone(t);
+                      if (errors.phone) setErrors((e) => ({ ...e, phone: undefined }));
+                      // Auto-detect country when an international number is entered.
+                      if (t.trim().startsWith('+')) {
+                        const detected = detectCountryFromPhone(t);
+                        if (detected) setCountry(detected);
+                      }
+                    }}
+                  />
+                </View>
+                {errors.phone && <Text style={styles.errorText}>{errors.phone}</Text>}
+                {!isSupported && (
+                  <View style={styles.noticeBanner}>
+                    <Ionicons name="information-circle" size={18} color={THEME.colors.primary} />
+                    <Text style={styles.noticeText}>
+                      Data buying isn&apos;t available in your country yet. You can still
+                      register and earn points by watching ads.
+                    </Text>
+                  </View>
+                )}
+              </View>
+
               {/* Username (optional) */}
               <View style={styles.fieldGroup}>
                 <Text style={styles.label}>
@@ -222,6 +307,28 @@ export default function RegisterScreen() {
                     onChangeText={setUsername}
                   />
                 </View>
+              </View>
+
+              {/* Referral code (optional) */}
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>
+                  Referral Code <Text style={styles.optional}>(optional)</Text>
+                </Text>
+                <View style={styles.inputRow}>
+                  <Ionicons name="gift-outline" size={18} color={THEME.colors.textSecondary} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter a friend's code"
+                    placeholderTextColor={THEME.colors.textSecondary}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    value={referralCode}
+                    onChangeText={setReferralCode}
+                  />
+                </View>
+                <Text style={styles.optional}>
+                  Your friend gets 50 points when you sign up.
+                </Text>
               </View>
 
               {/* CTA */}
@@ -256,6 +363,59 @@ export default function RegisterScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Country picker */}
+      <Modal
+        visible={countryModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCountryModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setCountryModal(false)}
+        >
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Select your country</Text>
+            {SUPPORTED_COUNTRIES.map((c) => (
+              <TouchableOpacity
+                key={c.code}
+                style={styles.countryRow}
+                onPress={() => {
+                  setCountry(c);
+                  setCountryModal(false);
+                  setErrors((e) => ({ ...e, phone: undefined }));
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.countryRowFlag}>{c.flag}</Text>
+                <Text style={styles.countryRowName}>{c.name}</Text>
+                <Text style={styles.countryRowCode}>{c.dialCode}</Text>
+                {country?.code === c.code && (
+                  <Ionicons name="checkmark-circle" size={20} color={THEME.colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={styles.countryRow}
+              onPress={() => {
+                setCountry(null);
+                setCountryModal(false);
+                setErrors((e) => ({ ...e, phone: undefined }));
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.countryRowFlag}>🌍</Text>
+              <Text style={styles.countryRowName}>Other (not supported yet)</Text>
+              {!country && (
+                <Ionicons name="checkmark-circle" size={20} color={THEME.colors.primary} />
+              )}
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -309,6 +469,103 @@ const styles = StyleSheet.create({
   inputError: { borderColor: THEME.colors.error },
   input: { flex: 1, fontSize: THEME.fontSize.base, color: THEME.colors.text },
   eyeBtn: { padding: 4 },
+
+  // Phone + country
+  phoneWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.colors.background,
+    borderRadius: THEME.borderRadius.input,
+    borderWidth: 1.5,
+    borderColor: THEME.colors.border,
+    height: 54,
+  },
+  countryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+  },
+  countryFlag: { fontSize: 18 },
+  countryCode: {
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.semiBold,
+    color: THEME.colors.text,
+  },
+  phoneDivider: {
+    width: 1,
+    height: 26,
+    backgroundColor: THEME.colors.border,
+  },
+  phoneInput: {
+    flex: 1,
+    fontSize: THEME.fontSize.base,
+    color: THEME.colors.text,
+    paddingHorizontal: 12,
+  },
+  noticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: THEME.colors.primarySurface,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 4,
+  },
+  noticeText: {
+    flex: 1,
+    fontSize: THEME.fontSize.xs,
+    color: THEME.colors.text,
+    lineHeight: 17,
+  },
+
+  // Country modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: THEME.colors.overlay,
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: THEME.colors.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 32,
+  },
+  modalHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: THEME.colors.border,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: THEME.fontSize.lg,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: THEME.colors.text,
+    marginBottom: 12,
+  },
+  countryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.border,
+  },
+  countryRowFlag: { fontSize: 22 },
+  countryRowName: {
+    flex: 1,
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.medium,
+    color: THEME.colors.text,
+  },
+  countryRowCode: {
+    fontSize: THEME.fontSize.sm,
+    color: THEME.colors.textSecondary,
+  },
   errorText: { fontSize: THEME.fontSize.xs, color: THEME.colors.error, marginLeft: 4 },
   ctaBtn: {
     flexDirection: 'row',

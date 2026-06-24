@@ -6,6 +6,7 @@ export async function awardPoints(
   userId: string,
   adTypeId: string | null,
   pointsEarned: number,
+  source: 'ad' | 'daily_bonus' | 'referral' = 'ad',
 ): Promise<{ success: boolean; newTotal: number; error?: string }> {
   try {
     // Only attach ad_type_id when it's a real UUID from the ad_types table.
@@ -13,6 +14,7 @@ export async function awardPoints(
     const txPayload: Record<string, unknown> = {
       user_id: userId,
       points_earned: pointsEarned,
+      source,
     };
     if (adTypeId) txPayload.ad_type_id = adTypeId;
 

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Animated,
   RefreshControl,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, Profile } from '../../lib/supabase';
@@ -16,7 +17,15 @@ import { deductPoints } from '../../lib/adService';
 import { ensureProfile } from '../../lib/profileService';
 import { rechargeData } from '../../lib/dataVendorService';
 import { THEME } from '../../constants/theme';
-import { NETWORKS, DATA_PLANS, Network } from '../../constants/networks';
+import { DATA_PLANS, Network } from '../../constants/networks';
+import {
+  SUPPORTED_COUNTRIES,
+  getCountryByCode,
+  formatPhoneForCountry,
+  detectCountryFromPhone,
+  Country,
+} from '../../constants/countries';
+import { Ionicons } from '@expo/vector-icons';
 import { NetworkSelector } from '../../components/NetworkSelector';
 import { DataPackageCard } from '../../components/DataPackageCard';
 import { PointsBadge } from '../../components/PointsBadge';
@@ -37,6 +46,10 @@ export default function RedeemScreen() {
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
   const [pinVisible, setPinVisible] = useState(false);
+  // The country the recharge is FOR (based on the entered phone number),
+  // independent of where the user themselves registered from.
+  const [country, setCountry] = useState<Country>(SUPPORTED_COUNTRIES[0]);
+  const [countryModal, setCountryModal] = useState(false);
 
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const [toastMsg, setToastMsg] = useState('');
@@ -47,8 +60,26 @@ export default function RedeemScreen() {
     const prof = await ensureProfile();
     if (prof) {
       setProfile(prof);
-      setPhone(prof.phone_number?.replace('+234', '0') ?? '');
+      // Default the recharge country to the user's own, if it's supported.
+      const ownCountry = getCountryByCode(prof.country);
+      if (ownCountry) setCountry(ownCountry);
+      if (prof.phone_number && ownCountry) {
+        // Show the national number (strip the dial code) for editing.
+        setPhone(prof.phone_number.replace(ownCountry.dialCode, ''));
+      } else if (prof.phone_number) {
+        setPhone(prof.phone_number);
+      }
     }
+  }
+
+  const networks = country.networks;
+
+  function changeCountry(c: Country) {
+    setCountry(c);
+    setCountryModal(false);
+    setSelectedNetwork(null);
+    setSelectedPlan(null);
+    setPhoneError('');
   }
 
   useEffect(() => {
@@ -67,11 +98,7 @@ export default function RedeemScreen() {
   }
 
   function validatePhone(raw: string): string | null {
-    const digits = raw.replace(/\D/g, '');
-    if (digits.length === 11 && digits.startsWith('0')) return `+234${digits.slice(1)}`;
-    if (digits.length === 10) return `+234${digits}`;
-    if (digits.length === 13 && digits.startsWith('234')) return `+${digits}`;
-    return null;
+    return formatPhoneForCountry(raw, country);
   }
 
   // Validate the form, then require the transaction PIN before charging points.
@@ -86,7 +113,7 @@ export default function RedeemScreen() {
     }
     const formattedPhone = validatePhone(phone);
     if (!formattedPhone) {
-      setPhoneError('Enter a valid Nigerian phone number');
+      setPhoneError(`Enter a valid ${country.name} phone number`);
       return;
     }
 
@@ -136,9 +163,10 @@ export default function RedeemScreen() {
 
       if (rechargeError) throw rechargeError;
 
-      // Call data vendor
+      // Call data vendor (routed by the recharge number's country)
       const vendorResult = await rechargeData({
         phone: formattedPhone,
+        countryCode: country.code,
         network: selectedNetwork.id,
         dataPlan: selectedPlan.id,
         requestId: rechargeRecord.id,
@@ -233,98 +261,119 @@ export default function RedeemScreen() {
           </View>
         )}
 
-        {/* Network selector */}
-        <View style={styles.formSection}>
-          <Text style={styles.fieldTitle}>1. Select Network</Text>
-          <NetworkSelector
-            selected={selectedNetwork?.id ?? null}
-            onSelect={(n) => {
-              setSelectedNetwork(n);
-              setSelectedPlan(null);
-            }}
-          />
-        </View>
-
-        {/* Phone number */}
-        <View style={styles.formSection}>
-          <Text style={styles.fieldTitle}>2. Recharge Number</Text>
-          <View style={[styles.phoneRow, phoneError ? styles.phoneRowError : null]}>
-            <Text style={styles.flag}>🇳🇬</Text>
-            <TextInput
-              style={styles.phoneInput}
-              placeholder="08012345678"
-              placeholderTextColor={THEME.colors.textSecondary}
-              keyboardType="phone-pad"
-              value={phone}
-              onChangeText={(t) => {
-                setPhone(t);
-                setPhoneError('');
-              }}
-            />
-          </View>
-          {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
-          <Text style={styles.phoneHint}>Enter the phone number to receive data</Text>
-        </View>
-
-        {/* Data plan grid */}
-        <View style={styles.formSection}>
-          <Text style={styles.fieldTitle}>3. Choose Data Plan</Text>
-          {!selectedNetwork ? (
-            <View style={styles.emptyPlanMsg}>
-              <Text style={styles.emptyPlanText}>Select a network first to see available plans</Text>
-            </View>
-          ) : (
-            <View style={styles.planGrid}>
-              {DATA_PLANS.map((plan) => (
-                <DataPackageCard
-                  key={plan.id}
-                  pkg={plan}
-                  selected={selectedPlan?.id === plan.id}
-                  userPoints={points}
-                  onSelect={(p) => setSelectedPlan(p)}
+        {!loading && (
+          <>
+            {/* Recharge number + country */}
+            <View style={styles.formSection}>
+              <Text style={styles.fieldTitle}>1. Recharge Number</Text>
+              <View style={[styles.phoneRow, phoneError ? styles.phoneRowError : null]}>
+                <TouchableOpacity
+                  style={styles.countryChip}
+                  onPress={() => setCountryModal(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.flag}>{country.flag}</Text>
+                  <Text style={styles.dialCode}>{country.dialCode}</Text>
+                  <Ionicons name="chevron-down" size={14} color={THEME.colors.textSecondary} />
+                </TouchableOpacity>
+                <View style={styles.chipDivider} />
+                <TextInput
+                  style={styles.phoneInput}
+                  placeholder="Phone number"
+                  placeholderTextColor={THEME.colors.textSecondary}
+                  keyboardType="phone-pad"
+                  value={phone}
+                  onChangeText={(t) => {
+                    setPhone(t);
+                    setPhoneError('');
+                    // Auto-switch country if an international number is typed.
+                    if (t.trim().startsWith('+')) {
+                      const detected = detectCountryFromPhone(t);
+                      if (detected && detected.code !== country.code) changeCountry(detected);
+                    }
+                  }}
                 />
-              ))}
+              </View>
+              {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
+              <Text style={styles.phoneHint}>
+                Buy for any supported country — just pick the number&apos;s country
+              </Text>
             </View>
-          )}
-        </View>
 
-        {/* Redeem button */}
-        {selectedPlan && (
-          <View style={styles.redeemSummary}>
-            <Text style={styles.redeemSummaryText}>
-              Redeeming <Text style={styles.redeemBold}>{selectedPlan.label}</Text> on{' '}
-              <Text style={styles.redeemBold}>{selectedNetwork?.name}</Text>
-            </Text>
-            <Text style={styles.redeemPointsCost}>
-              Cost: {selectedPlan.points} pts •{' '}
-              {canAfford
-                ? `You'll have ${points - selectedPlan.points} pts left`
-                : `Need ${shortfall} more pts`}
-            </Text>
-          </View>
+            {/* Network selector */}
+            <View style={styles.formSection}>
+              <Text style={styles.fieldTitle}>2. Select Network</Text>
+              <NetworkSelector
+                networks={networks}
+                selected={selectedNetwork?.id ?? null}
+                onSelect={(n) => {
+                  setSelectedNetwork(n);
+                  setSelectedPlan(null);
+                }}
+              />
+            </View>
+
+            {/* Data plan grid */}
+            <View style={styles.formSection}>
+              <Text style={styles.fieldTitle}>3. Choose Data Plan</Text>
+              {!selectedNetwork ? (
+                <View style={styles.emptyPlanMsg}>
+                  <Text style={styles.emptyPlanText}>Select a network first to see available plans</Text>
+                </View>
+              ) : (
+                <View style={styles.planGrid}>
+                  {DATA_PLANS.map((plan) => (
+                    <DataPackageCard
+                      key={plan.id}
+                      pkg={plan}
+                      selected={selectedPlan?.id === plan.id}
+                      userPoints={points}
+                      onSelect={(p) => setSelectedPlan(p)}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+
+            {/* Redeem summary */}
+            {selectedPlan && (
+              <View style={styles.redeemSummary}>
+                <Text style={styles.redeemSummaryText}>
+                  Redeeming <Text style={styles.redeemBold}>{selectedPlan.label}</Text> on{' '}
+                  <Text style={styles.redeemBold}>{selectedNetwork?.name}</Text>
+                </Text>
+                <Text style={styles.redeemPointsCost}>
+                  Cost: {selectedPlan.points} pts •{' '}
+                  {canAfford
+                    ? `You'll have ${points - selectedPlan.points} pts left`
+                    : `Need ${shortfall} more pts`}
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.redeemBtn,
+                (!canAfford || !selectedNetwork || !selectedPlan || submitting) && styles.redeemBtnDisabled,
+              ]}
+              onPress={handleRedeem}
+              activeOpacity={0.85}
+              disabled={!canAfford || !selectedNetwork || !selectedPlan || submitting}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.redeemBtnText}>
+                  {!selectedPlan
+                    ? 'Select a plan to redeem'
+                    : !canAfford
+                      ? `Need ${shortfall} more points`
+                      : `🎁 Redeem ${selectedPlan.label} Data`}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </>
         )}
-
-        <TouchableOpacity
-          style={[
-            styles.redeemBtn,
-            (!canAfford || !selectedNetwork || !selectedPlan || submitting) && styles.redeemBtnDisabled,
-          ]}
-          onPress={handleRedeem}
-          activeOpacity={0.85}
-          disabled={!canAfford || !selectedNetwork || !selectedPlan || submitting}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text style={styles.redeemBtnText}>
-              {!selectedPlan
-                ? 'Select a plan to redeem'
-                : !canAfford
-                  ? `Need ${shortfall} more points`
-                  : `🎁 Redeem ${selectedPlan.label} Data`}
-            </Text>
-          )}
-        </TouchableOpacity>
 
         <View style={{ height: 32 }} />
       </ScrollView>
@@ -341,6 +390,40 @@ export default function RedeemScreen() {
         onClose={() => setPinVisible(false)}
         onSuccess={executeRedeem}
       />
+
+      {/* Recharge country picker */}
+      <Modal
+        visible={countryModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCountryModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setCountryModal(false)}
+        >
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Buy data for…</Text>
+            {SUPPORTED_COUNTRIES.map((c) => (
+              <TouchableOpacity
+                key={c.code}
+                style={styles.countryRow}
+                onPress={() => changeCountry(c)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.countryRowFlag}>{c.flag}</Text>
+                <Text style={styles.countryRowName}>{c.name}</Text>
+                <Text style={styles.countryRowCode}>{c.dialCode}</Text>
+                {country.code === c.code && (
+                  <Ionicons name="checkmark-circle" size={20} color={THEME.colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -417,10 +500,74 @@ const styles = StyleSheet.create({
   },
   phoneRowError: { borderColor: THEME.colors.error },
   flag: { fontSize: 18 },
+  countryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  chipDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: THEME.colors.border,
+    marginHorizontal: 10,
+  },
+  dialCode: {
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.semiBold,
+    color: THEME.colors.text,
+  },
   phoneInput: {
     flex: 1,
     fontSize: THEME.fontSize.base,
     color: THEME.colors.text,
+  },
+
+  // Country modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: THEME.colors.overlay,
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: THEME.colors.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 32,
+  },
+  modalHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: THEME.colors.border,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: THEME.fontSize.lg,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: THEME.colors.text,
+    marginBottom: 12,
+  },
+  countryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.border,
+  },
+  countryRowFlag: { fontSize: 22 },
+  countryRowName: {
+    flex: 1,
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.medium,
+    color: THEME.colors.text,
+  },
+  countryRowCode: {
+    fontSize: THEME.fontSize.sm,
+    color: THEME.colors.textSecondary,
   },
   phoneHint: {
     fontSize: THEME.fontSize.xs,

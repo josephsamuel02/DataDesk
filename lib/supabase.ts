@@ -22,6 +22,14 @@ export interface Profile {
   phone_number: string | null;
   email: string | null;
   avatar_url: string | null;
+  /** ISO country code detected at registration (e.g. "NG"), or null/"OTHER" if unsupported. */
+  country: string | null;
+  /** This user's own referral code to share. */
+  referral_code: string | null;
+  /** The profile id of whoever referred this user, if any. */
+  referred_by: string | null;
+  /** Last date (YYYY-MM-DD) the daily login bonus was claimed. */
+  last_daily_bonus_at: string | null;
   points: number;
   created_at: string;
 }
@@ -37,8 +45,9 @@ export interface AdTypeRow {
 export interface PointsTransaction {
   id: string;
   user_id: string;
-  ad_type_id: string;
+  ad_type_id: string | null;
   points_earned: number;
+  source: 'ad' | 'daily_bonus' | 'referral' | null;
   watched_at: string;
   ad_types?: AdTypeRow;
 }

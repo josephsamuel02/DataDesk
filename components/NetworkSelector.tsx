@@ -1,26 +1,28 @@
 import React from 'react';
 import {
+  Text,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
 import { THEME } from '../constants/theme';
-import { NETWORKS, Network } from '../constants/networks';
+import { Network } from '../constants/networks';
 import { NetworkLogo } from './NetworkLogo';
 
 interface NetworkSelectorProps {
-  selected: Network['id'] | null;
+  networks: Network[];
+  selected: string | null;
   onSelect: (network: Network) => void;
 }
 
-export function NetworkSelector({ selected, onSelect }: NetworkSelectorProps) {
+export function NetworkSelector({ networks, selected, onSelect }: NetworkSelectorProps) {
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.scroll}
     >
-      {NETWORKS.map((network) => {
+      {networks.map((network) => {
         const isSelected = selected === network.id;
         return (
           <TouchableOpacity
@@ -33,7 +35,17 @@ export function NetworkSelector({ selected, onSelect }: NetworkSelectorProps) {
             onPress={() => onSelect(network)}
             activeOpacity={0.8}
           >
-            <NetworkLogo id={network.id} size={56} />
+            <NetworkLogo
+              logo={network.logo}
+              name={network.name}
+              color={network.color}
+              size={56}
+            />
+            {!network.logo && (
+              <Text style={styles.name} numberOfLines={1}>
+                {network.name}
+              </Text>
+            )}
           </TouchableOpacity>
         );
       })}
@@ -53,9 +65,16 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
     backgroundColor: THEME.colors.card,
+    gap: 6,
+    minWidth: 76,
     ...THEME.shadow.small,
   },
   cardSelected: {
     backgroundColor: THEME.colors.primarySurface,
+  },
+  name: {
+    fontSize: THEME.fontSize.xs,
+    fontWeight: THEME.fontWeight.semiBold,
+    color: THEME.colors.text,
   },
 });

@@ -11,7 +11,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, RechargeRequest, PointsTransaction } from '../../lib/supabase';
 import { THEME } from '../../constants/theme';
-import { NETWORKS, Network } from '../../constants/networks';
+import { findNetwork } from '../../constants/countries';
+import { EARN_SOURCE_META } from '../../constants/earn';
 import { Logo } from '../../components/Logo';
 import { NetworkLogo } from '../../components/NetworkLogo';
 
@@ -33,14 +34,14 @@ function StatusBadge({ status }: { status: RechargeRequest['status'] }) {
 }
 
 function NetworkIcon({ network }: { network: string }) {
-  const n = NETWORKS.find((net) => net.id === network);
-  if (n) {
-    return <NetworkLogo id={n.id as Network['id']} size={44} />;
-  }
+  const n = findNetwork(network);
   return (
-    <View style={[styles.networkIcon, { backgroundColor: '#6B7280' }]}>
-      <Text style={styles.networkIconText}>?</Text>
-    </View>
+    <NetworkLogo
+      logo={n?.logo}
+      name={n?.name ?? network}
+      color={n?.color ?? '#6B7280'}
+      size={44}
+    />
   );
 }
 
@@ -118,14 +119,17 @@ export default function HistoryScreen() {
   );
 
   const renderPointsItem = ({ item }: { item: PointsTransaction }) => {
-    const adName = (item as any).ad_types?.name ?? 'Ad';
+    const source = item.source ?? 'ad';
+    const meta = EARN_SOURCE_META[source] ?? EARN_SOURCE_META.ad;
+    // Prefer the real ad name for ad rewards; otherwise use the source label.
+    const title = source === 'ad' ? (item.ad_types?.name ?? meta.label) : meta.label;
     return (
       <View style={styles.listItem}>
         <View style={styles.adIconCircle}>
-          <Text style={styles.adIconText}>📺</Text>
+          <Text style={styles.adIconText}>{meta.icon}</Text>
         </View>
         <View style={styles.listItemContent}>
-          <Text style={styles.listItemTitle}>{adName}</Text>
+          <Text style={styles.listItemTitle}>{title}</Text>
           <Text style={styles.listItemDate}>{formatDate(item.watched_at)}</Text>
         </View>
         <View style={styles.listItemRight}>

@@ -1,9 +1,8 @@
 // ─── Data Vendor Abstraction Layer ──────────────────────────────────────────
-// Compatible with: Clubkonnect, GsubzApi, Nellobytesystems
-// Set EXPO_PUBLIC_VENDOR_MOCK=true to use mock mode in development
+// Each TIER 1 country routes to its own data vendor, configured via env.
+// Compatible with: Clubkonnect, GsubzApi, Nellobytesystems, Reloadly, etc.
+// Set EXPO_PUBLIC_VENDOR_MOCK=true to use mock mode in development.
 
-const BASE_URL = process.env.EXPO_PUBLIC_VENDOR_API_URL ?? '';
-const API_KEY = process.env.EXPO_PUBLIC_VENDOR_API_KEY ?? '';
 const MOCK_MODE = process.env.EXPO_PUBLIC_VENDOR_MOCK === 'true';
 
 export interface DataVendorConfig {
@@ -11,9 +10,41 @@ export interface DataVendorConfig {
   apiKey: string;
 }
 
+// Per-country vendor credentials (Tier 1). Keyed by ISO country code.
+const VENDORS: Record<string, DataVendorConfig> = {
+  NG: {
+    baseUrl: process.env.EXPO_PUBLIC_VENDOR_NG_URL ?? process.env.EXPO_PUBLIC_VENDOR_API_URL ?? '',
+    apiKey: process.env.EXPO_PUBLIC_VENDOR_NG_KEY ?? process.env.EXPO_PUBLIC_VENDOR_API_KEY ?? '',
+  },
+  GH: {
+    baseUrl: process.env.EXPO_PUBLIC_VENDOR_GH_URL ?? '',
+    apiKey: process.env.EXPO_PUBLIC_VENDOR_GH_KEY ?? '',
+  },
+  KE: {
+    baseUrl: process.env.EXPO_PUBLIC_VENDOR_KE_URL ?? '',
+    apiKey: process.env.EXPO_PUBLIC_VENDOR_KE_KEY ?? '',
+  },
+  UG: {
+    baseUrl: process.env.EXPO_PUBLIC_VENDOR_UG_URL ?? '',
+    apiKey: process.env.EXPO_PUBLIC_VENDOR_UG_KEY ?? '',
+  },
+};
+
+function getVendor(countryCode?: string | null): DataVendorConfig | null {
+  if (!countryCode) return null;
+  return VENDORS[countryCode.toUpperCase()] ?? null;
+}
+
+/** Whether data purchasing is available for the given country. */
+export function isVendorAvailable(countryCode?: string | null): boolean {
+  return !!getVendor(countryCode);
+}
+
 export interface RechargePayload {
   phone: string;
-  network: 'GLO' | 'MTN' | 'AIRTEL' | '9MOBILE';
+  /** ISO country code (e.g. "NG") used to pick the right vendor. */
+  countryCode: string;
+  network: string;
   dataPlan: string;
   requestId: string;
 }
@@ -78,19 +109,28 @@ export async function rechargeData(payload: RechargePayload): Promise<RechargeRe
     };
   }
 
+  const vendor = getVendor(payload.countryCode);
+  if (!vendor) {
+    return {
+      success: false,
+      message: 'Data purchasing is not yet available in your country.',
+    };
+  }
+
   // TODO: Replace with actual vendor endpoint
   // Compatible with Clubkonnect: POST /api/topup
   // Compatible with GsubzApi: POST /v1/data
   // Compatible with Nellobytesystems: POST /api/data/purchase
   try {
-    const response = await fetch(`${BASE_URL}/api/data/purchase`, {
+    const response = await fetch(`${vendor.baseUrl}/api/data/purchase`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
+        Authorization: `Bearer ${vendor.apiKey}`,
       },
       body: JSON.stringify({
         phone: payload.phone,
+        country: payload.countryCode,
         network: payload.network.toLowerCase(),
         plan: payload.dataPlan,
         request_id: payload.requestId,
@@ -115,15 +155,18 @@ export async function rechargeData(payload: RechargePayload): Promise<RechargeRe
 
 // ─── Get available data plans for a network ──────────────────────────────────
 
-export async function getDataPlans(network: string): Promise<DataPlan[]> {
+export async function getDataPlans(network: string, countryCode?: string): Promise<DataPlan[]> {
   if (MOCK_MODE) {
     return MOCK_PLANS[network] ?? [];
   }
 
+  const vendor = getVendor(countryCode);
+  if (!vendor) return MOCK_PLANS[network] ?? [];
+
   // TODO: Replace with actual vendor endpoint
   try {
-    const response = await fetch(`${BASE_URL}/api/plans?network=${network.toLowerCase()}`, {
-      headers: { Authorization: `Bearer ${API_KEY}` },
+    const response = await fetch(`${vendor.baseUrl}/api/plans?network=${network.toLowerCase()}`, {
+      headers: { Authorization: `Bearer ${vendor.apiKey}` },
     });
     const data = await response.json();
     return data.plans ?? [];
@@ -134,15 +177,18 @@ export async function getDataPlans(network: string): Promise<DataPlan[]> {
 
 // ─── Check vendor wallet balance ─────────────────────────────────────────────
 
-export async function checkBalance(): Promise<number> {
+export async function checkBalance(countryCode?: string): Promise<number> {
   if (MOCK_MODE) {
     return 50000;
   }
 
+  const vendor = getVendor(countryCode);
+  if (!vendor) return 0;
+
   // TODO: Replace with actual vendor endpoint
   try {
-    const response = await fetch(`${BASE_URL}/api/balance`, {
-      headers: { Authorization: `Bearer ${API_KEY}` },
+    const response = await fetch(`${vendor.baseUrl}/api/balance`, {
+      headers: { Authorization: `Bearer ${vendor.apiKey}` },
     });
     const data = await response.json();
     return data.balance ?? 0;

@@ -7,6 +7,7 @@ import {
   RefreshControl,
   TouchableOpacity,
   Animated,
+  Share,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -14,9 +15,11 @@ import { setStatusBarStyle } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, Profile } from '../../lib/supabase';
 import { awardPoints } from '../../lib/adService';
+import { claimDailyBonus, isDailyBonusClaimed } from '../../lib/earnService';
 import { ensureProfile } from '../../lib/profileService';
 import { THEME } from '../../constants/theme';
 import { AD_TYPES, AdType } from '../../constants/adTypes';
+import { EARN_POINTS } from '../../constants/earn';
 import { AdCard } from '../../components/AdCard';
 import { useDialog } from '../../components/DialogProvider';
 import { Avatar } from '../../components/Avatar';
@@ -126,6 +129,61 @@ export default function HomeScreen() {
     ]).start();
   }
 
+  async function handleClaimDailyBonus() {
+    const result = await claimDailyBonus();
+    if (!result.success) {
+      dialog.alert({
+        title: 'Something went wrong',
+        message: result.error ?? 'Could not claim your bonus. Try again.',
+        variant: 'error',
+      });
+      return;
+    }
+    if (result.alreadyClaimed) {
+      dialog.alert({
+        title: 'Already Claimed',
+        message: 'You have already claimed your daily bonus today. Come back tomorrow!',
+        variant: 'info',
+      });
+      // Sync local claimed state.
+      const todayStr = new Date().toISOString().slice(0, 10);
+      setProfile((prev) =>
+        prev ? { ...prev, last_daily_bonus_at: todayStr, points: result.newTotal ?? prev.points } : prev,
+      );
+      return;
+    }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    setProfile((prev) =>
+      prev
+        ? { ...prev, points: result.newTotal ?? prev.points, last_daily_bonus_at: todayStr }
+        : prev,
+    );
+    setTodayPoints((prev) => prev + (result.awarded ?? EARN_POINTS.dailyBonus));
+    showToast(`🎁 Daily bonus claimed! +${result.awarded ?? EARN_POINTS.dailyBonus} points`);
+  }
+
+  async function handleShareReferral() {
+    const code = profile?.referral_code;
+    if (!code) {
+      dialog.alert({
+        title: 'Refer & Earn',
+        message: 'Your referral code is still being set up. Pull to refresh and try again.',
+        variant: 'info',
+      });
+      return;
+    }
+    try {
+      await Share.share({
+        message:
+          `Join me on Data Desk and turn ads into free data! 🎉\n\n` +
+          `Use my referral code ${code} when you sign up — I'll get ${EARN_POINTS.referralSignup} points. ` +
+          `Download Data Desk now.`,
+      });
+    } catch {
+      // user dismissed the share sheet — nothing to do
+    }
+  }
+
   async function handleAdComplete(adType: AdType) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -162,6 +220,7 @@ export default function HomeScreen() {
       : 'there';
 
   const points = profile?.points ?? 0;
+  const dailyClaimed = isDailyBonusClaimed(profile?.last_daily_bonus_at ?? null);
 
   const nextMilestoneTarget = (() => {
     if (points < 50) return 50;
@@ -261,20 +320,22 @@ export default function HomeScreen() {
           <View style={styles.sectionHeaderRow}>
             <View style={styles.sectionHeaderText}>
               <Text style={styles.sectionTitle}>Earn Points</Text>
-              <Text style={styles.sectionSubtitle}>Watch ads and earn points to get free data</Text>
+              <Text style={styles.sectionSubtitle}>Watch ads, log in daily & refer friends</Text>
             </View>
             <View style={styles.adsAvailable}>
               <View style={styles.adsDot} />
-              <Text style={styles.adsAvailableText}>{AD_TYPES.length} ads available</Text>
+              <Text style={styles.adsAvailableText}>3 ways to earn</Text>
             </View>
           </View>
 
           <View style={styles.adsContainer}>
-            {loading
-              ? [1, 2, 3, 4].map((i) => (
-                  <Skeleton key={i} width="100%" height={78} style={{ marginBottom: 12, borderRadius: 20 }} />
-                ))
-              : AD_TYPES.map((adType) => (
+            {loading ? (
+              [1, 2].map((i) => (
+                <Skeleton key={i} width="100%" height={78} style={{ marginBottom: 12, borderRadius: 20 }} />
+              ))
+            ) : (
+              <>
+                {AD_TYPES.map((adType) => (
                   <AdCard
                     key={adType.id}
                     adType={adType}
@@ -283,6 +344,63 @@ export default function HomeScreen() {
                     onAdComplete={handleAdComplete}
                   />
                 ))}
+
+                {/* Daily login bonus */}
+                <View style={styles.earnRow}>
+                  <View style={[styles.iconSquare, { backgroundColor: THEME.category.orange.surface }]}>
+                    <Ionicons name="calendar-outline" size={22} color={THEME.category.orange.color} />
+                  </View>
+                  <View style={styles.earnInfo}>
+                    <Text style={styles.earnTitle} numberOfLines={1}>Daily Login Bonus</Text>
+                    <Text style={styles.earnSub} numberOfLines={1}>
+                      {dailyClaimed ? 'Come back tomorrow for more' : 'Claim once every day'}
+                    </Text>
+                  </View>
+                  <View style={styles.earnRight}>
+                    <View style={styles.pointsPill}>
+                      <Text style={styles.pointsPillText}>+{EARN_POINTS.dailyBonus}</Text>
+                      <Text style={styles.pointsStar}>⭐</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.earnBtn, dailyClaimed && styles.earnBtnDone]}
+                      onPress={handleClaimDailyBonus}
+                      activeOpacity={0.85}
+                      disabled={dailyClaimed}
+                    >
+                      <Text style={[styles.earnBtnText, dailyClaimed && styles.earnBtnTextDone]}>
+                        {dailyClaimed ? 'Claimed' : 'Claim'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Referral */}
+                <View style={styles.earnRow}>
+                  <View style={[styles.iconSquare, { backgroundColor: THEME.category.green.surface }]}>
+                    <Ionicons name="people-outline" size={22} color={THEME.category.green.color} />
+                  </View>
+                  <View style={styles.earnInfo}>
+                    <Text style={styles.earnTitle} numberOfLines={1}>Refer a Friend</Text>
+                    <Text style={styles.earnSub} numberOfLines={1}>
+                      {profile?.referral_code ? `Your code: ${profile.referral_code}` : 'Invite friends to earn'}
+                    </Text>
+                  </View>
+                  <View style={styles.earnRight}>
+                    <View style={styles.pointsPill}>
+                      <Text style={styles.pointsPillText}>+{EARN_POINTS.referralSignup}</Text>
+                      <Text style={styles.pointsStar}>⭐</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.earnBtn}
+                      onPress={handleShareReferral}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.earnBtnText}>Share</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </>
+            )}
           </View>
 
           {/* ── QUICK ACTIONS ────────────────────────────────── */}
@@ -318,7 +436,7 @@ export default function HomeScreen() {
               surface={THEME.category.orange.surface}
               label="Refer & Earn"
               subtitle="Invite Friends"
-              onPress={() => dialog.alert({ title: 'Refer & Earn', message: 'Referrals are coming soon — invite friends to Data Desk!', variant: 'info' })}
+              onPress={handleShareReferral}
             />
           </View>
 
@@ -329,14 +447,17 @@ export default function HomeScreen() {
             <View style={styles.referralText}>
               <Text style={styles.referralTitle}>Invite friends & earn more points!</Text>
               <Text style={styles.referralSub}>
-                You get <Text style={styles.referralBold}>200 points</Text>, they get{' '}
-                <Text style={styles.referralBold}>100 points</Text>
+                Get <Text style={styles.referralBold}>{EARN_POINTS.referralSignup} points</Text> for every
+                friend who signs up with your code
+                {profile?.referral_code ? (
+                  <Text style={styles.referralBold}> ({profile.referral_code})</Text>
+                ) : null}
               </Text>
             </View>
             <TouchableOpacity
               style={styles.inviteBtn}
               activeOpacity={0.9}
-              onPress={() => dialog.alert({ title: 'Invite Now', message: 'Referrals are coming soon to Data Desk!', variant: 'info' })}
+              onPress={handleShareReferral}
             >
               <Text style={styles.inviteBtnText}>Invite</Text>
               <Ionicons name="arrow-forward" size={14} color={THEME.colors.primary} />
@@ -561,6 +682,76 @@ const styles = StyleSheet.create({
   },
   adsContainer: {
     marginBottom: 28,
+  },
+
+  // Earn action rows (daily bonus, referral)
+  earnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.colors.card,
+    borderRadius: THEME.borderRadius.card,
+    padding: 14,
+    marginBottom: 12,
+    gap: 12,
+    ...THEME.shadow.small,
+  },
+  iconSquare: {
+    width: 50,
+    height: 50,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  earnInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  earnTitle: {
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.bold,
+    color: THEME.colors.text,
+  },
+  earnSub: {
+    fontSize: THEME.fontSize.sm,
+    color: THEME.colors.textSecondary,
+  },
+  earnRight: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  pointsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: THEME.colors.goldSurface,
+    borderRadius: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  pointsPillText: {
+    fontSize: THEME.fontSize.sm,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: '#B45309',
+  },
+  pointsStar: {
+    fontSize: 11,
+  },
+  earnBtn: {
+    backgroundColor: THEME.colors.primary,
+    borderRadius: THEME.borderRadius.button,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  earnBtnText: {
+    color: '#FFFFFF',
+    fontWeight: THEME.fontWeight.bold,
+    fontSize: THEME.fontSize.sm,
+  },
+  earnBtnDone: {
+    backgroundColor: THEME.colors.skeleton,
+  },
+  earnBtnTextDone: {
+    color: THEME.colors.textSecondary,
   },
 
   // Quick actions

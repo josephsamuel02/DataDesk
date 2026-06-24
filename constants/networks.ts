@@ -1,41 +1,8 @@
-export interface Network {
-  id: 'GLO' | 'MTN' | 'AIRTEL' | '9MOBILE';
-  name: string;
-  color: string;
-  textColor: string;
-  shortCode: string;
-}
+import { CountryNetwork } from './countries';
 
-export const NETWORKS: Network[] = [
-  {
-    id: 'GLO',
-    name: 'Glo Nigeria',
-    color: '#4CAF50',
-    textColor: '#FFFFFF',
-    shortCode: '07',
-  },
-  {
-    id: 'MTN',
-    name: 'MTN Nigeria',
-    color: '#FFC107',
-    textColor: '#1A1A2E',
-    shortCode: '08',
-  },
-  {
-    id: 'AIRTEL',
-    name: 'Airtel Nigeria',
-    color: '#E53935',
-    textColor: '#FFFFFF',
-    shortCode: '08',
-  },
-  {
-    id: '9MOBILE',
-    name: '9mobile Nigeria',
-    color: '#00897B',
-    textColor: '#FFFFFF',
-    shortCode: '08',
-  },
-];
+// Networks are now defined per-country in constants/countries.ts.
+// `Network` is kept as an alias for backward compatibility across the app.
+export type Network = CountryNetwork;
 
 export const DATA_PLANS = [
   { id: '500mb', label: '500MB', points: 50, validity: '7 days', gb: 0.5 },

@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
 import { THEME } from '../constants/theme';
 import { DialogProvider } from '../components/DialogProvider';
+import { scheduleAdReminders, cancelAdReminders } from '../lib/notificationService';
 
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);
@@ -28,6 +29,17 @@ export default function RootLayout() {
   }, []);
 
   const inAuthGroup = segments[0] === '(auth)';
+
+  // Schedule the twice-daily "watch ads" reminders once logged in;
+  // clear them on sign out.
+  useEffect(() => {
+    if (initializing) return;
+    if (session) {
+      scheduleAdReminders().catch(() => {});
+    } else {
+      cancelAdReminders().catch(() => {});
+    }
+  }, [session, initializing]);
 
   useEffect(() => {
     if (initializing) return;
