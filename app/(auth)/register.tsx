@@ -146,7 +146,7 @@ export default function RegisterScreen() {
             <Ionicons name="mail-unread" size={36} color={THEME.colors.primary} />
           </View>
           <View style={styles.brandRowSmall}>
-            <Logo size={16} variant="color" />
+            <Logo size={28} variant="color" />
             <Text style={styles.appNameSmall}>Data Desk</Text>
           </View>
           <Text style={styles.confirmTitle}>Check your inbox</Text>

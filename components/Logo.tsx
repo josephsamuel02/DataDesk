@@ -1,61 +1,49 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
-import { THEME } from '../constants/theme';
+import { Image, View, StyleSheet } from 'react-native';
+
+const ICON = require('../assets/icon.png');
 
 interface LogoProps {
   size?: number;
-  /** 'color' = green mark (for white backgrounds), 'light' = white mark (for green backgrounds) */
+  /**
+   * 'light' wraps the icon in a white rounded tile so it stays visible on dark
+   * backgrounds. 'color' renders the icon as-is (for light backgrounds).
+   */
   variant?: 'color' | 'light';
 }
 
-/**
- * Data Desk brand mark — a rounded "desk" tile with ascending data bars.
- * Built entirely from views (no raster assets).
- */
+/** Data Desk brand mark — uses the app icon asset. */
 export function Logo({ size = 28, variant = 'color' }: LogoProps) {
-  const isLight = variant === 'light';
-  const markBg = isLight ? '#FFFFFF' : THEME.colors.primary;
-  const barColor = isLight ? THEME.colors.primary : '#FFFFFF';
-
-  const pad = size * 0.22;
-  const innerHeight = size - pad * 2;
-  const barWidth = size * 0.13;
-  const heights = [0.45, 0.72, 1];
+  if (variant === 'light') {
+    return (
+      <View
+        style={[
+          styles.lightTile,
+          { width: size, height: size, borderRadius: size * 0.28 },
+        ]}
+      >
+        <Image
+          source={ICON}
+          style={{ width: size * 0.82, height: size * 0.82, borderRadius: size * 0.2 }}
+          resizeMode="contain"
+        />
+      </View>
+    );
+  }
 
   return (
-    <View
-      style={[
-        styles.mark,
-        {
-          width: size,
-          height: size,
-          borderRadius: size * 0.28,
-          backgroundColor: markBg,
-          padding: pad,
-          gap: size * 0.09,
-        },
-        !isLight && THEME.shadow.glow,
-      ]}
-    >
-      {heights.map((h, i) => (
-        <View
-          key={i}
-          style={{
-            width: barWidth,
-            height: innerHeight * h,
-            borderRadius: barWidth / 2,
-            backgroundColor: barColor,
-          }}
-        />
-      ))}
-    </View>
+    <Image
+      source={ICON}
+      style={{ width: size, height: size, borderRadius: size * 0.24 }}
+      resizeMode="contain"
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  mark: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+  lightTile: {
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
     justifyContent: 'center',
   },
 });

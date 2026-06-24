@@ -228,7 +228,7 @@ export default function RedeemScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.brandRow}>
-            <Logo size={15} variant="color" />
+            <Logo size={26} variant="color" />
             <Text style={styles.screenTitle}>Data Desk</Text>
           </View>
           <Text style={styles.pageTitle}>Redeem Data</Text>

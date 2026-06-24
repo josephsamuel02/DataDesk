@@ -19,7 +19,7 @@ export function AuthHero({ title, subtitle }: AuthHeroProps) {
       <View style={styles.decorSm} pointerEvents="none" />
 
       <View style={styles.brandRow}>
-        <Logo size={26} variant="light" />
+        <Logo size={40} variant="light" />
         <Text style={styles.brand}>Data Desk</Text>
       </View>
       <Text style={styles.tagline}>Your Data, Your Way</Text>

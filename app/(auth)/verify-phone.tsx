@@ -121,7 +121,7 @@ export default function VerifyPhoneScreen() {
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.brandRow}>
-              <Logo size={20} variant="color" />
+              <Logo size={28} variant="color" />
               <Text style={styles.appName}>Data Desk</Text>
             </View>
             <Text style={styles.title}>Verify Your Phone</Text>

@@ -7,11 +7,13 @@ import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
 import { THEME } from '../constants/theme';
 import { DialogProvider } from '../components/DialogProvider';
+import { SplashOverlay } from '../components/SplashOverlay';
 import { scheduleAdReminders, cancelAdReminders } from '../lib/notificationService';
 
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const [splashVisible, setSplashVisible] = useState(true);
   const router = useRouter();
   const segments = useSegments();
 
@@ -58,23 +60,25 @@ export default function RootLayout() {
   const needsRedirect =
     !initializing && ((!session && !inAuthGroup) || (!!session && inAuthGroup));
 
-  if (initializing || needsRedirect) {
-    return (
+  const content =
+    initializing || needsRedirect ? (
       <View style={styles.loader}>
         <ActivityIndicator size="large" color={THEME.colors.primary} />
       </View>
-    );
-  }
-
-  return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <StatusBar style="dark" />
+    ) : (
       <DialogProvider>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         </Stack>
       </DialogProvider>
+    );
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <StatusBar style="dark" />
+      {content}
+      {splashVisible && <SplashOverlay onFinish={() => setSplashVisible(false)} />}
     </GestureHandlerRootView>
   );
 }

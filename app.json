@@ -14,16 +14,14 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#EAEAFB",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/icon.png"
       },
       "package": "com.datadesk.app",
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png",
+      "favicon": "./assets/icon.png",
       "bundler": "metro"
     },
     "experiments": {
@@ -31,6 +29,15 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
       [
         "expo-notifications",
         {
