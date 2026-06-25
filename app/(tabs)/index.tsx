@@ -14,13 +14,22 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { setStatusBarStyle } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, Profile } from '../../lib/supabase';
-import { awardPoints } from '../../lib/adService';
 import { claimDailyBonus, isDailyBonusClaimed } from '../../lib/earnService';
+import {
+  canWatchAd,
+  checkAndResetDaily,
+  evaluateTier,
+  recordAdWatched,
+  persistProfilePatch,
+} from '../../lib/tierService';
 import { ensureProfile } from '../../lib/profileService';
 import { THEME } from '../../constants/theme';
-import { AD_TYPES, AdType } from '../../constants/adTypes';
 import { EARN_POINTS } from '../../constants/earn';
-import { AdCard } from '../../components/AdCard';
+import { bestAffordableData } from '../../constants/dataPlans';
+import { AdCooldownTimer } from '../../components/AdCooldownTimer';
+import { DailyAdProgress } from '../../components/DailyAdProgress';
+import { TierProgressCard } from '../../components/TierProgressCard';
+import { RewardedAdModal } from '../../components/RewardedAdModal';
 import { useDialog } from '../../components/DialogProvider';
 import { Avatar } from '../../components/Avatar';
 
@@ -71,6 +80,8 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [todayPoints, setTodayPoints] = useState(0);
+  const [adModalVisible, setAdModalVisible] = useState(false);
+  const [showTierDetails, setShowTierDetails] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const toastOpacity = useRef(new Animated.Value(0)).current;
 
@@ -86,8 +97,23 @@ export default function HomeScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const prof = await ensureProfile();
-    if (prof) setProfile(prof);
+    let prof = await ensureProfile();
+    if (prof) {
+      // Apply the daily reset + tier re-evaluation locally, then flush to Supabase
+      // so the UI reflects the right limits immediately on open.
+      const resetPatch = checkAndResetDaily(prof);
+      let merged: Profile = { ...prof, ...resetPatch };
+      const nextTier = evaluateTier(merged.tier, merged.current_streak, merged.lifetime_ads);
+      const tierPatch = nextTier !== merged.tier ? { tier: nextTier } : {};
+      merged = { ...merged, ...tierPatch };
+
+      const patch = { ...resetPatch, ...tierPatch };
+      if (Object.keys(patch).length > 0) {
+        await persistProfilePatch(user.id, patch);
+      }
+      prof = merged;
+      setProfile(merged);
+    }
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -184,33 +210,81 @@ export default function HomeScreen() {
     }
   }
 
-  async function handleAdComplete(adType: AdType) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    // Resolve the real ad_types UUID by name. If it isn't found (table not
-    // seeded / name mismatch), pass null instead of the local numeric id —
-    // the DB column is a UUID FK and a value like "1" would be rejected.
-    const { data: adTypeRows } = await supabase
-      .from('ad_types')
-      .select('id')
-      .eq('name', adType.name)
-      .limit(1);
-
-    const adTypeId = adTypeRows?.[0]?.id ?? null;
-
-    const result = await awardPoints(user.id, adTypeId, adType.points);
-    if (result.success) {
-      setProfile((prev) => (prev ? { ...prev, points: result.newTotal } : prev));
-      setTodayPoints((prev) => prev + adType.points);
-      showToast(`🎉 You earned ${adType.points} point${adType.points !== 1 ? 's' : ''}! Keep going on Data Desk!`);
-    } else {
+  // User tapped "Watch Ad & Earn": re-check the limit/cooldown, then load the ad.
+  function handleWatchAd() {
+    if (!profile) return;
+    const check = canWatchAd(profile);
+    if (!check.allowed) {
       dialog.alert({
-        title: 'Something went wrong',
-        message: result.error ?? 'Could not award points. Try again.',
-        variant: 'error',
+        title: check.reason === 'cooldown_active' ? 'Almost there' : 'Daily limit reached',
+        message:
+          check.reason === 'cooldown_active'
+            ? 'Please wait for the short cooldown to finish before watching another ad.'
+            : "You've watched all your ads for today. Come back tomorrow — or build a streak to unlock a higher tier with more daily ads!",
+        variant: 'info',
       });
+      return;
     }
+    // Never start an ad without passing the cooldown/limit checks above.
+    setAdModalVisible(true);
+  }
+
+  // Fired only when the (simulated) rewarded ad completes — never on skip/close.
+  async function handleAdReward() {
+    setAdModalVisible(false);
+    const result = await recordAdWatched();
+
+    if (result.success) {
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              points: result.points,
+              tier: result.tier,
+              ads_watched_today: result.adsWatchedToday,
+              lifetime_ads: result.lifetimeAds,
+              current_streak: result.currentStreak,
+              longest_streak: result.longestStreak,
+              last_ad_watched_at: result.lastAdWatchedAt,
+              daily_reset_date: result.dailyResetDate,
+            }
+          : prev,
+      );
+      setTodayPoints((prev) => prev + result.awardedPoints);
+      showToast(`✓ +${result.awardedPoints} point${result.awardedPoints !== 1 ? 's' : ''} earned!`);
+      if (result.tierChanged) {
+        setTimeout(
+          () =>
+            dialog.alert({
+              title: 'Tier upgraded! 🎉',
+              message: `You've reached a new tier and can now watch more ads each day. Keep it up!`,
+              variant: 'success',
+            }),
+          400,
+        );
+      }
+      return;
+    }
+
+    // Rejected by the server (cooldown / daily limit / error). Sync local state
+    // so the UI stays accurate even on rejection.
+    setProfile((prev) =>
+      prev
+        ? {
+            ...prev,
+            ads_watched_today: result.adsWatchedToday,
+            daily_reset_date: result.dailyResetDate ?? prev.daily_reset_date,
+            last_ad_watched_at: result.lastAdWatchedAt ?? prev.last_ad_watched_at,
+          }
+        : prev,
+    );
+    const message =
+      result.reason === 'cooldown'
+        ? 'Please wait for the cooldown to finish before watching another ad.'
+        : result.reason === 'daily_limit'
+          ? "You've hit today's ad limit. Come back tomorrow for more!"
+          : result.error ?? 'Could not award points right now. Please try again.';
+    dialog.alert({ title: 'Not awarded', message, variant: result.reason === 'error' ? 'error' : 'info' });
   }
 
   const greetingName = profile?.username
@@ -220,15 +294,9 @@ export default function HomeScreen() {
       : 'there';
 
   const points = profile?.points ?? 0;
+  const possibleData = bestAffordableData(points);
   const dailyClaimed = isDailyBonusClaimed(profile?.last_daily_bonus_at ?? null);
-
-  const nextMilestoneTarget = (() => {
-    if (points < 50) return 50;
-    if (points < 100) return 100;
-    if (points < 180) return 180;
-    if (points < 400) return 400;
-    return 700;
-  })();
+  const adLimitReached = profile ? canWatchAd(profile).reason === 'daily_limit_reached' : false;
 
   const initial = (profile?.username ?? profile?.email ?? 'D')[0]?.toUpperCase();
 
@@ -294,13 +362,14 @@ export default function HomeScreen() {
               ) : (
                 <View style={styles.balanceAmountRow}>
                   <Text style={styles.balanceAmount}>{points.toLocaleString()}</Text>
-                  <View style={styles.coinBadge}>
-                    <Text style={styles.coinStar}>⭐</Text>
-                  </View>
                 </View>
               )}
 
-              <Text style={styles.balanceWorth}>≈ ₦{points.toLocaleString()} worth of data</Text>
+              <Text style={styles.balanceWorth}>
+                {possibleData
+                  ? `≈ ${possibleData.label} of data you can get`
+                  : 'Watch ads to unlock your first data bundle'}
+              </Text>
 
               <TouchableOpacity
                 style={styles.redeemBtn}
@@ -335,15 +404,55 @@ export default function HomeScreen() {
               ))
             ) : (
               <>
-                {AD_TYPES.map((adType) => (
-                  <AdCard
-                    key={adType.id}
-                    adType={adType}
-                    userPoints={points}
-                    nextMilestone={nextMilestoneTarget}
-                    onAdComplete={handleAdComplete}
+                {/* Watch rewarded ads */}
+                <View style={styles.watchCard}>
+                  <View style={styles.watchHeader}>
+                    <View style={[styles.iconSquare, { backgroundColor: THEME.category.purple.surface }]}>
+                      <Ionicons name="play-circle-outline" size={22} color={THEME.category.purple.color} />
+                    </View>
+                    <View style={styles.earnInfo}>
+                      <Text style={styles.earnTitle} numberOfLines={1}>Watch & Earn</Text>
+                      <Text style={styles.earnSub} numberOfLines={1}>
+                        +{EARN_POINTS.rewardedAd} point{EARN_POINTS.rewardedAd !== 1 ? 's' : ''} per rewarded video
+                      </Text>
+                    </View>
+                  </View>
+
+                  <DailyAdProgress
+                    adsWatchedToday={profile?.ads_watched_today ?? 0}
+                    tier={profile?.tier ?? 1}
                   />
-                ))}
+
+                  <AdCooldownTimer
+                    lastAdWatchedAt={profile?.last_ad_watched_at ?? null}
+                    onWatchAd={handleWatchAd}
+                    disabled={adLimitReached}
+                    disabledLabel="Daily limit reached"
+                  />
+
+                  <TouchableOpacity
+                    style={styles.tierToggle}
+                    onPress={() => setShowTierDetails((v) => !v)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.tierToggleText}>
+                      {showTierDetails ? 'Hide tier progress' : 'View tier progress'}
+                    </Text>
+                    <Ionicons
+                      name={showTierDetails ? 'chevron-up' : 'chevron-down'}
+                      size={16}
+                      color={THEME.colors.primary}
+                    />
+                  </TouchableOpacity>
+
+                  {showTierDetails && (
+                    <TierProgressCard
+                      tier={profile?.tier ?? 1}
+                      currentStreak={profile?.current_streak ?? 0}
+                      lifetimeAds={profile?.lifetime_ads ?? 0}
+                    />
+                  )}
+                </View>
 
                 {/* Daily login bonus */}
                 <View style={styles.earnRow}>
@@ -467,6 +576,13 @@ export default function HomeScreen() {
           <View style={{ height: 24 }} />
         </ScrollView>
       </SafeAreaView>
+
+      {/* Simulated rewarded ad — replace with AdMob (see constants/admob.ts) */}
+      <RewardedAdModal
+        visible={adModalVisible}
+        onReward={handleAdReward}
+        onClose={() => setAdModalVisible(false)}
+      />
 
       {/* Toast notification */}
       <Animated.View style={[styles.toast, { opacity: toastOpacity }]} pointerEvents="none">
@@ -609,15 +725,6 @@ const styles = StyleSheet.create({
     fontWeight: THEME.fontWeight.extraBold,
     color: '#FFFFFF',
   },
-  coinBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: THEME.colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  coinStar: { fontSize: 16 },
   balanceWorth: {
     fontSize: THEME.fontSize.sm,
     color: 'rgba(255,255,255,0.75)',
@@ -682,6 +789,29 @@ const styles = StyleSheet.create({
   },
   adsContainer: {
     marginBottom: 28,
+  },
+
+  // Watch & earn card
+  watchCard: {
+    backgroundColor: THEME.colors.card,
+    borderRadius: THEME.borderRadius.card,
+    padding: 14,
+    marginBottom: 12,
+    gap: 12,
+    ...THEME.shadow.small,
+  },
+  watchHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tierToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 2,
+  },
+  tierToggleText: {
+    fontSize: THEME.fontSize.sm,
+    fontWeight: THEME.fontWeight.semiBold,
+    color: THEME.colors.primary,
   },
 
   // Earn action rows (daily bonus, referral)

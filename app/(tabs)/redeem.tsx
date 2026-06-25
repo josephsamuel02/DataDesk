@@ -17,7 +17,8 @@ import { deductPoints } from '../../lib/adService';
 import { ensureProfile } from '../../lib/profileService';
 import { rechargeData } from '../../lib/dataVendorService';
 import { THEME } from '../../constants/theme';
-import { DATA_PLANS, Network } from '../../constants/networks';
+import { Network } from '../../constants/networks';
+import { getPlansForNetwork, NetworkPlan, NETWORK_DATA_PLANS } from '../../constants/dataPlans';
 import {
   SUPPORTED_COUNTRIES,
   getCountryByCode,
@@ -42,7 +43,7 @@ export default function RedeemScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const [selectedNetwork, setSelectedNetwork] = useState<Network | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<(typeof DATA_PLANS)[0] | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<NetworkPlan | null>(null);
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
   const [pinVisible, setPinVisible] = useState(false);
@@ -205,8 +206,12 @@ export default function RedeemScreen() {
   }
 
   const points = profile?.points ?? 0;
-  const nextTier = DATA_PLANS.find((p) => p.points > points);
-  const nextTierPoints = nextTier?.points ?? 700;
+  const networkPlans = getPlansForNetwork(selectedNetwork?.id);
+  const allPlans = Object.values(NETWORK_DATA_PLANS).flat();
+  const nextTier = allPlans
+    .filter((p) => p.points > points)
+    .sort((a, b) => a.points - b.points)[0];
+  const nextTierPoints = nextTier?.points ?? Math.max(...allPlans.map((p) => p.points));
 
   const canAfford = selectedPlan ? points >= selectedPlan.points : false;
   const shortfall = selectedPlan ? Math.max(0, selectedPlan.points - points) : 0;
@@ -320,15 +325,21 @@ export default function RedeemScreen() {
                 <View style={styles.emptyPlanMsg}>
                   <Text style={styles.emptyPlanText}>Select a network first to see available plans</Text>
                 </View>
+              ) : networkPlans.length === 0 ? (
+                <View style={styles.emptyPlanMsg}>
+                  <Text style={styles.emptyPlanText}>
+                    No active {selectedNetwork.name} data plans yet — please pick another network.
+                  </Text>
+                </View>
               ) : (
                 <View style={styles.planGrid}>
-                  {DATA_PLANS.map((plan) => (
+                  {networkPlans.map((plan) => (
                     <DataPackageCard
                       key={plan.id}
                       pkg={plan}
                       selected={selectedPlan?.id === plan.id}
                       userPoints={points}
-                      onSelect={(p) => setSelectedPlan(p)}
+                      onSelect={(p) => setSelectedPlan(p as NetworkPlan)}
                     />
                   ))}
                 </View>

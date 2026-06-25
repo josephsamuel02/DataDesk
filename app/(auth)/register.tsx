@@ -41,10 +41,13 @@ export default function RegisterScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  // Consent to the Privacy Policy / Terms (kept local for now — not persisted yet).
+  const [accepted, setAccepted] = useState(false);
   const [errors, setErrors] = useState<{
     email?: string;
     password?: string;
     phone?: string;
+    consent?: string;
     general?: string;
   }>({});
 
@@ -58,6 +61,7 @@ export default function RegisterScreen() {
     const newErrors: typeof errors = {};
     if (!validateEmail(email)) newErrors.email = 'Enter a valid email address';
     if (password.length < 8) newErrors.password = 'Password must be at least 8 characters';
+    if (!accepted) newErrors.consent = 'Please accept the Privacy Policy to continue.';
 
     // Resolve the phone number based on the chosen country.
     let formattedPhone: string | null = null;
@@ -331,12 +335,45 @@ export default function RegisterScreen() {
                 </Text>
               </View>
 
+              {/* Consent */}
+              <View style={styles.consentGroup}>
+                <TouchableOpacity
+                  style={styles.consentRow}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setAccepted((v) => !v);
+                    if (errors.consent) setErrors((e) => ({ ...e, consent: undefined }));
+                  }}
+                >
+                  <View style={[styles.checkbox, accepted && styles.checkboxChecked]}>
+                    {accepted && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                  </View>
+                  <Text style={styles.consentText}>
+                    I have read and agree to the{' '}
+                    <Text
+                      style={styles.consentLink}
+                      onPress={() => router.push('/(legal)/privacy')}
+                    >
+                      Privacy Policy
+                    </Text>{' '}
+                    and{' '}
+                    <Text
+                      style={styles.consentLink}
+                      onPress={() => router.push('/(legal)/terms')}
+                    >
+                      Terms of Use
+                    </Text>
+                  </Text>
+                </TouchableOpacity>
+                {errors.consent && <Text style={styles.errorText}>{errors.consent}</Text>}
+              </View>
+
               {/* CTA */}
               <TouchableOpacity
-                style={[styles.ctaBtn, loading && styles.ctaBtnDisabled]}
+                style={[styles.ctaBtn, (loading || !accepted) && styles.ctaBtnDisabled]}
                 onPress={handleRegister}
                 activeOpacity={0.85}
-                disabled={loading}
+                disabled={loading || !accepted}
               >
                 {loading ? (
                   <ActivityIndicator color="#FFFFFF" />
@@ -347,10 +384,6 @@ export default function RegisterScreen() {
                   </>
                 )}
               </TouchableOpacity>
-
-              <Text style={styles.termsText}>
-                By creating an account you agree to use Data Desk responsibly.
-              </Text>
             </View>
 
             {/* Footer link */}
@@ -578,17 +611,44 @@ const styles = StyleSheet.create({
     marginTop: 4,
     ...THEME.shadow.large,
   },
-  ctaBtnDisabled: { opacity: 0.7 },
+  ctaBtnDisabled: { opacity: 0.5 },
   ctaBtnText: {
     fontSize: THEME.fontSize.md,
     fontWeight: THEME.fontWeight.bold,
     color: '#FFFFFF',
   },
-  termsText: {
-    fontSize: THEME.fontSize.xs,
+
+  // Consent
+  consentGroup: { gap: 6, marginTop: 2 },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#ccc',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: THEME.colors.primary,
+    borderColor: THEME.colors.primary,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: THEME.fontSize.sm,
     color: THEME.colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 20,
+  },
+  consentLink: {
+    color: THEME.colors.primary,
+    fontWeight: THEME.fontWeight.semiBold,
   },
 
   // Footer

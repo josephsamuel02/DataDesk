@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS profiles (
   referred_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
   last_daily_bonus_at DATE,          -- last date the daily login bonus was claimed
   points INTEGER DEFAULT 0 NOT NULL,
+  -- Tier / streak system (see supabase/migrations/0001_tier_system.sql)
+  tier INTEGER NOT NULL DEFAULT 1,           -- 1 Starter, 2 Active, 3 Loyal
+  lifetime_ads INTEGER NOT NULL DEFAULT 0,
+  current_streak INTEGER NOT NULL DEFAULT 0,
+  longest_streak INTEGER NOT NULL DEFAULT 0,
+  last_ad_watched_at TIMESTAMPTZ,
+  ads_watched_today INTEGER NOT NULL DEFAULT 0,
+  daily_reset_date DATE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -23,6 +31,13 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS country TEXT;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES profiles(id) ON DELETE SET NULL;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS last_daily_bonus_at DATE;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS lifetime_ads INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS current_streak INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS longest_streak INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS last_ad_watched_at TIMESTAMPTZ;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS ads_watched_today INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_reset_date DATE;
 
 -- Backfill referral codes for users created before this column existed.
 UPDATE profiles
@@ -45,7 +60,7 @@ CREATE TABLE IF NOT EXISTS ad_types (
   description TEXT
 );
 
--- 3. Seed default ad types (names MUST match constants/adTypes.ts)
+-- 3. Seed default ad types ('Rewarded Video Ad' is looked up by record_ad_watched())
 INSERT INTO ad_types (name, points_reward, duration_seconds, description) VALUES
   ('Rewarded Video Ad', 2, 30, 'Watch a short video to earn points')
 ON CONFLICT (name) DO UPDATE SET
@@ -183,10 +198,10 @@ BEGIN
     RETURN;
   END IF;
 
-  UPDATE public.profiles
-    SET points = points + bonus, last_daily_bonus_at = CURRENT_DATE
-    WHERE id = uid
-    RETURNING points INTO new_total;
+  UPDATE public.profiles AS p
+    SET points = p.points + bonus, last_daily_bonus_at = CURRENT_DATE
+    WHERE p.id = uid
+    RETURNING p.points INTO new_total;
 
   INSERT INTO public.points_transactions (user_id, points_earned, source)
   VALUES (uid, bonus, 'daily_bonus');
@@ -248,6 +263,389 @@ CREATE POLICY "Avatar update"
 CREATE POLICY "Avatar delete"
   ON storage.objects FOR DELETE TO authenticated
   USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- ─── Rewarded-ad guardrails: cooldown + session distribution ────────────────
+-- Engagement-quality controls enforced SERVER-SIDE (clients are not trusted):
+--   • 180s cooldown between ad rewards
+--   • Daily cap of 30 rewarded ads
+--   • Day split into 2 sessions (local app time): Day 06:00–15:00, Night
+--     15:00–06:00 (+1d). Each session allows up to 70% of the daily cap (= 21).
+--     Together the two sessions cover the full 24h — ads are never "closed".
+-- Adjust the constants inside the functions below to retune. Session windows use
+-- a single reference timezone (Africa/Lagos); change app_tz to retune.
+
+-- Resolve the ad session (and its window bounds) for a given instant.
+CREATE OR REPLACE FUNCTION public.ad_session_at(ts TIMESTAMPTZ)
+RETURNS TABLE (session_key TEXT, win_start TIMESTAMPTZ, win_end TIMESTAMPTZ)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+  app_tz   TEXT := 'Africa/Lagos';
+  local_ts TIMESTAMP := timezone(app_tz, ts);
+  d        DATE := local_ts::date;
+  h        INTEGER := extract(hour from local_ts)::int;
+BEGIN
+  IF h >= 6 AND h < 15 THEN
+    -- Day session (06:00–15:00)
+    session_key := 'day';
+    win_start := timezone(app_tz, (d + time '06:00'));
+    win_end   := timezone(app_tz, (d + time '15:00'));
+  ELSIF h >= 15 THEN
+    -- Night session that begins today (15:00) and ends tomorrow 06:00
+    session_key := 'night';
+    win_start := timezone(app_tz, (d + time '15:00'));
+    win_end   := timezone(app_tz, ((d + 1) + time '06:00'));
+  ELSE
+    -- Early morning (h < 6): night session began yesterday 15:00, ends today 06:00
+    session_key := 'night';
+    win_start := timezone(app_tz, ((d - 1) + time '15:00'));
+    win_end   := timezone(app_tz, (d + time '06:00'));
+  END IF;
+  RETURN NEXT;
+  RETURN;
+END;
+$$;
+
+-- Read-only ad availability snapshot for the current user.
+CREATE OR REPLACE FUNCTION public.get_ad_status()
+RETURNS TABLE (
+  session_open BOOLEAN,
+  session_key TEXT,
+  cooldown_remaining INTEGER,
+  session_count INTEGER,
+  session_cap INTEGER,
+  daily_count INTEGER,
+  daily_cap INTEGER,
+  seconds_to_next_window INTEGER
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  uid       UUID := auth.uid();
+  app_tz    TEXT := 'Africa/Lagos';
+  now_ts    TIMESTAMPTZ := now();
+  cooldown  INTEGER := 180;
+  sess      RECORD;
+  day_start TIMESTAMPTZ;
+  last_ad   TIMESTAMPTZ;
+BEGIN
+  daily_cap := 30;
+  session_cap := ceil(daily_cap * 0.7)::int;
+
+  IF uid IS NULL THEN
+    session_open := false; session_key := NULL; cooldown_remaining := 0;
+    session_count := 0; daily_count := 0; seconds_to_next_window := 0;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  SELECT s.session_key, s.win_start, s.win_end INTO sess
+  FROM public.ad_session_at(now_ts) s;
+
+  day_start := timezone(app_tz, (timezone(app_tz, now_ts)::date + time '00:00'));
+
+  SELECT count(*) INTO daily_count FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad' AND watched_at >= day_start;
+
+  SELECT max(watched_at) INTO last_ad FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad';
+
+  IF last_ad IS NOT NULL THEN
+    cooldown_remaining := greatest(0, cooldown - floor(extract(epoch from (now_ts - last_ad)))::int);
+  ELSE
+    cooldown_remaining := 0;
+  END IF;
+
+  -- Two sessions cover the whole day, so ads are always within a session.
+  session_open := true;
+  session_key := sess.session_key;
+  SELECT count(*) INTO session_count FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad'
+      AND watched_at >= sess.win_start AND watched_at < sess.win_end;
+  seconds_to_next_window := 0;
+
+  RETURN NEXT; RETURN;
+END;
+$$;
+
+-- Atomically award one rewarded-ad credit if all guardrails pass.
+CREATE OR REPLACE FUNCTION public.claim_ad_reward()
+RETURNS TABLE (
+  awarded BOOLEAN,
+  reason TEXT,
+  points INTEGER,
+  awarded_points INTEGER,
+  cooldown_remaining INTEGER,
+  session_count INTEGER,
+  session_cap INTEGER,
+  daily_count INTEGER,
+  daily_cap INTEGER
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  uid       UUID := auth.uid();
+  app_tz    TEXT := 'Africa/Lagos';
+  now_ts    TIMESTAMPTZ := now();
+  cooldown  INTEGER := 180;
+  reward    INTEGER := 2;
+  ad_uuid   UUID;
+  sess      RECORD;
+  day_start TIMESTAMPTZ;
+  last_ad   TIMESTAMPTZ;
+  new_total INTEGER;
+  d_count   INTEGER;
+  s_count   INTEGER;
+  cd_left   INTEGER := 0;
+BEGIN
+  daily_cap := 30;
+  session_cap := ceil(daily_cap * 0.7)::int;
+
+  IF uid IS NULL THEN
+    awarded := false; reason := 'no_auth'; points := 0; awarded_points := 0;
+    cooldown_remaining := 0; session_count := 0; daily_count := 0;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  -- Serialize concurrent claims for this user.
+  SELECT p.points INTO new_total FROM public.profiles p WHERE p.id = uid FOR UPDATE;
+
+  SELECT s.session_key, s.win_start, s.win_end INTO sess
+  FROM public.ad_session_at(now_ts) s;
+
+  day_start := timezone(app_tz, (timezone(app_tz, now_ts)::date + time '00:00'));
+
+  SELECT max(watched_at) INTO last_ad FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad';
+  IF last_ad IS NOT NULL THEN
+    cd_left := greatest(0, cooldown - floor(extract(epoch from (now_ts - last_ad)))::int);
+  END IF;
+
+  SELECT count(*) INTO d_count FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad' AND watched_at >= day_start;
+
+  SELECT count(*) INTO s_count FROM public.points_transactions
+    WHERE user_id = uid AND source = 'ad'
+      AND watched_at >= sess.win_start AND watched_at < sess.win_end;
+
+  IF cd_left > 0 THEN
+    awarded := false; reason := 'cooldown'; points := new_total; awarded_points := 0;
+    cooldown_remaining := cd_left; session_count := s_count; daily_count := d_count;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  IF d_count >= daily_cap THEN
+    awarded := false; reason := 'daily_cap'; points := new_total; awarded_points := 0;
+    cooldown_remaining := 0; session_count := s_count; daily_count := d_count;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  IF s_count >= session_cap THEN
+    awarded := false; reason := 'session_cap'; points := new_total; awarded_points := 0;
+    cooldown_remaining := 0; session_count := s_count; daily_count := d_count;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  -- Passed all checks → award.
+  SELECT id INTO ad_uuid FROM public.ad_types WHERE name = 'Rewarded Video Ad' LIMIT 1;
+
+  INSERT INTO public.points_transactions (user_id, ad_type_id, points_earned, source, watched_at)
+  VALUES (uid, ad_uuid, reward, 'ad', now_ts);
+
+  -- Alias the table so `points` is unambiguous against the OUT parameter.
+  UPDATE public.profiles AS p SET points = p.points + reward WHERE p.id = uid
+    RETURNING p.points INTO new_total;
+
+  awarded := true; reason := 'ok'; points := new_total; awarded_points := reward;
+  cooldown_remaining := cooldown; session_count := s_count + 1; daily_count := d_count + 1;
+  RETURN NEXT; RETURN;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_ad_status() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_ad_reward() TO authenticated;
+
+-- ─── 3-tier daily ad limit system ───────────────────────────────────────────
+-- See supabase/migrations/0001_tier_system.sql for the full description.
+-- record_ad_watched() supersedes claim_ad_reward() as the ad-award entry point:
+-- it enforces the 3-min cooldown + tier-based daily limit, maintains streaks /
+-- lifetime / tier, and awards points — all atomically. Tiers never downgrade.
+
+CREATE OR REPLACE FUNCTION public.tier_daily_limit(t INTEGER)
+RETURNS INTEGER
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE
+    WHEN t >= 3 THEN 54
+    WHEN t = 2 THEN 45
+    ELSE 35
+  END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.evaluate_tier(cur_tier INTEGER, streak INTEGER, lifetime INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  qualified INTEGER := 1;
+BEGIN
+  IF streak >= 7 OR lifetime >= 200 THEN qualified := 2; END IF;
+  IF streak >= 21 OR lifetime >= 600 THEN qualified := 3; END IF;
+  RETURN greatest(coalesce(cur_tier, 1), qualified);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.record_ad_watched()
+RETURNS TABLE (
+  success BOOLEAN,
+  reason TEXT,
+  awarded_points INTEGER,
+  points INTEGER,
+  tier INTEGER,
+  ads_watched_today INTEGER,
+  lifetime_ads INTEGER,
+  current_streak INTEGER,
+  longest_streak INTEGER,
+  last_ad_watched_at TIMESTAMPTZ,
+  daily_reset_date DATE,
+  cooldown_remaining INTEGER,
+  tier_changed BOOLEAN
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  uid        UUID := auth.uid();
+  app_tz     TEXT := 'Africa/Lagos';
+  now_ts     TIMESTAMPTZ := now();
+  cooldown   INTEGER := 180;
+  reward     INTEGER := 2;
+  ad_uuid    UUID;
+  today      DATE := (timezone(app_tz, now_ts))::date;
+  prof       RECORD;
+  eff_today  INTEGER;
+  last_day   DATE;
+  new_streak INTEGER;
+  new_tier   INTEGER;
+  cur_limit  INTEGER;
+  cd_left    INTEGER := 0;
+BEGIN
+  IF uid IS NULL THEN
+    success := false; reason := 'no_auth'; awarded_points := 0; points := 0;
+    tier := 1; ads_watched_today := 0; lifetime_ads := 0; current_streak := 0;
+    longest_streak := 0; last_ad_watched_at := NULL; daily_reset_date := today;
+    cooldown_remaining := 0; tier_changed := false;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  SELECT p.* INTO prof FROM public.profiles p WHERE p.id = uid FOR UPDATE;
+
+  IF prof.daily_reset_date IS NULL OR prof.daily_reset_date < today THEN
+    eff_today := 0;
+  ELSE
+    eff_today := coalesce(prof.ads_watched_today, 0);
+  END IF;
+
+  IF prof.last_ad_watched_at IS NOT NULL THEN
+    cd_left := greatest(0, cooldown - floor(extract(epoch from (now_ts - prof.last_ad_watched_at)))::int);
+  END IF;
+  IF cd_left > 0 THEN
+    success := false; reason := 'cooldown'; awarded_points := 0; points := prof.points;
+    tier := prof.tier; ads_watched_today := eff_today; lifetime_ads := prof.lifetime_ads;
+    current_streak := prof.current_streak; longest_streak := prof.longest_streak;
+    last_ad_watched_at := prof.last_ad_watched_at; daily_reset_date := today;
+    cooldown_remaining := cd_left; tier_changed := false;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  cur_limit := public.tier_daily_limit(prof.tier);
+  IF eff_today >= cur_limit THEN
+    success := false; reason := 'daily_limit'; awarded_points := 0; points := prof.points;
+    tier := prof.tier; ads_watched_today := eff_today; lifetime_ads := prof.lifetime_ads;
+    current_streak := prof.current_streak; longest_streak := prof.longest_streak;
+    last_ad_watched_at := prof.last_ad_watched_at; daily_reset_date := today;
+    cooldown_remaining := 0; tier_changed := false;
+    UPDATE public.profiles AS p
+      SET ads_watched_today = eff_today, daily_reset_date = today
+      WHERE p.id = uid;
+    RETURN NEXT; RETURN;
+  END IF;
+
+  last_day := (timezone(app_tz, prof.last_ad_watched_at))::date;
+  IF last_day = today THEN
+    new_streak := greatest(prof.current_streak, 1);
+  ELSIF last_day = today - 1 THEN
+    new_streak := coalesce(prof.current_streak, 0) + 1;
+  ELSE
+    new_streak := 1;
+  END IF;
+
+  new_tier := public.evaluate_tier(prof.tier, new_streak, prof.lifetime_ads + 1);
+
+  SELECT id INTO ad_uuid FROM public.ad_types WHERE name = 'Rewarded Video Ad' LIMIT 1;
+
+  UPDATE public.profiles AS p SET
+    ads_watched_today  = eff_today + 1,
+    lifetime_ads       = p.lifetime_ads + 1,
+    last_ad_watched_at = now_ts,
+    current_streak     = new_streak,
+    longest_streak     = greatest(p.longest_streak, new_streak),
+    tier               = new_tier,
+    daily_reset_date   = today,
+    points             = p.points + reward
+  WHERE p.id = uid
+  RETURNING p.points, p.ads_watched_today, p.lifetime_ads, p.current_streak, p.longest_streak
+  INTO points, ads_watched_today, lifetime_ads, current_streak, longest_streak;
+
+  INSERT INTO public.points_transactions (user_id, ad_type_id, points_earned, source, watched_at)
+  VALUES (uid, ad_uuid, reward, 'ad', now_ts);
+
+  success := true; reason := 'ok'; awarded_points := reward;
+  tier := new_tier; last_ad_watched_at := now_ts; daily_reset_date := today;
+  cooldown_remaining := cooldown; tier_changed := (new_tier <> prof.tier);
+  RETURN NEXT; RETURN;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.record_ad_watched() TO authenticated;
+
+-- ─── 28-hour retention for points-earned records ────────────────────────────
+-- History cleanup only — does NOT touch the spendable balance (profiles.points).
+-- Requires pg_cron (Dashboard → Database → Extensions). See
+-- supabase/migrations/0002_points_retention.sql.
+
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+CREATE OR REPLACE FUNCTION public.purge_old_points_transactions()
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  DELETE FROM public.points_transactions
+  WHERE watched_at < now() - interval '28 hours';
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'purge-old-points-transactions') THEN
+    PERFORM cron.unschedule('purge-old-points-transactions');
+  END IF;
+
+  PERFORM cron.schedule(
+    'purge-old-points-transactions',
+    '0 * * * *',
+    $cron$ SELECT public.purge_old_points_transactions(); $cron$
+  );
+END $$;
 
 -- ─── Auth Settings (configure in Supabase Dashboard) ───────────────────────
 -- Authentication → Providers → Phone: Enable, set OTP expiry to 600 seconds

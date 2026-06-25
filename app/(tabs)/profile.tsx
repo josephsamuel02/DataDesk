@@ -21,6 +21,8 @@ import { ensureProfile } from '../../lib/profileService';
 import { useDialog } from '../../components/DialogProvider';
 import { Avatar } from '../../components/Avatar';
 import { AvatarPickerModal } from '../../components/AvatarPickerModal';
+import { TierProgressCard } from '../../components/TierProgressCard';
+import { getTierConfig } from '../../lib/tierService';
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -415,6 +417,14 @@ export default function ProfileScreen() {
 
           <Text style={styles.profileName}>{displayName}</Text>
           <Text style={styles.memberSince}>Member since {memberSince}</Text>
+
+          {profile && (
+            <View style={styles.tierPill}>
+              <Text style={styles.tierPillText}>
+                {getTierConfig(profile.tier).icon} {getTierConfig(profile.tier).name} Tier
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Stats strip */}
@@ -434,6 +444,46 @@ export default function ProfileScreen() {
             <Text style={styles.statLabel}>Recharges</Text>
           </View>
         </View>
+
+        {/* Tier & daily ads */}
+        {profile && (
+          <View style={{ gap: 12 }}>
+            <Text style={styles.sectionLabel}>Tier &amp; Daily Ads</Text>
+            <TierProgressCard
+              tier={profile.tier}
+              currentStreak={profile.current_streak}
+              lifetimeAds={profile.lifetime_ads}
+            />
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>How many ads each tier can watch</Text>
+              {[1, 2, 3].map((t) => {
+                const cfg = getTierConfig(t);
+                const isCurrent = profile.tier === t;
+                return (
+                  <View key={t} style={[styles.tierRow, isCurrent && styles.tierRowActive]}>
+                    <Text style={styles.tierRowIcon}>{cfg.icon}</Text>
+                    <View style={styles.fieldContent}>
+                      <Text style={styles.fieldValue}>
+                        {cfg.name}
+                        {isCurrent ? '  •  Your tier' : ''}
+                      </Text>
+                      <Text style={styles.fieldLabel}>{cfg.dailyLimit} rewarded ads per day</Text>
+                    </View>
+                    {isCurrent ? (
+                      <Ionicons name="checkmark-circle" size={20} color={cfg.color} />
+                    ) : (
+                      <Text style={styles.tierRowLimit}>{cfg.dailyLimit}</Text>
+                    )}
+                  </View>
+                );
+              })}
+              <Text style={styles.tierFootnote}>
+                Today: {profile.ads_watched_today}/{getTierConfig(profile.tier).dailyLimit} ads · Streak{' '}
+                {profile.current_streak}d · {profile.lifetime_ads} lifetime ads
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Profile info / edit form */}
         <View style={styles.card}>
@@ -758,6 +808,49 @@ const styles = StyleSheet.create({
   memberSince: {
     fontSize: THEME.fontSize.xs,
     color: 'rgba(255,255,255,0.75)',
+  },
+  tierPill: {
+    marginTop: 8,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: THEME.borderRadius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  tierPillText: {
+    color: '#FFFFFF',
+    fontWeight: THEME.fontWeight.bold,
+    fontSize: THEME.fontSize.sm,
+  },
+
+  // Tier & daily ads
+  sectionLabel: {
+    fontSize: THEME.fontSize.md,
+    fontWeight: THEME.fontWeight.bold,
+    color: THEME.colors.text,
+  },
+  tierRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 8,
+  },
+  tierRowActive: {
+    backgroundColor: THEME.colors.primarySurface,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+  },
+  tierRowIcon: { fontSize: 24 },
+  tierRowLimit: {
+    fontSize: THEME.fontSize.base,
+    fontWeight: THEME.fontWeight.extraBold,
+    color: THEME.colors.textSecondary,
+  },
+  tierFootnote: {
+    fontSize: THEME.fontSize.xs,
+    color: THEME.colors.textSecondary,
+    marginTop: 4,
   },
 
   // Stats (overlaps the hero)

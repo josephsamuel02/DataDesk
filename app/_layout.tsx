@@ -31,6 +31,8 @@ export default function RootLayout() {
   }, []);
 
   const inAuthGroup = segments[0] === '(auth)';
+  // Legal screens (privacy / terms) are public — reachable signed-in or not.
+  const inPublicGroup = segments[0] === '(legal)';
 
   // Schedule the twice-daily "watch ads" reminders once logged in;
   // clear them on sign out.
@@ -46,19 +48,20 @@ export default function RootLayout() {
   useEffect(() => {
     if (initializing) return;
 
-    if (!session && !inAuthGroup) {
+    if (!session && !inAuthGroup && !inPublicGroup) {
       // Not logged in → always send to the login screen first
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [session, inAuthGroup, initializing]);
+  }, [session, inAuthGroup, inPublicGroup, initializing]);
 
   // Keep the loader visible until the user is on the correct screen. This avoids
   // briefly flashing the Home tab (the default "/" route) before redirecting an
   // unauthenticated user to login.
   const needsRedirect =
-    !initializing && ((!session && !inAuthGroup) || (!!session && inAuthGroup));
+    !initializing &&
+    ((!session && !inAuthGroup && !inPublicGroup) || (!!session && inAuthGroup));
 
   const content =
     initializing || needsRedirect ? (
@@ -70,6 +73,7 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="(legal)" options={{ headerShown: false }} />
         </Stack>
       </DialogProvider>
     );

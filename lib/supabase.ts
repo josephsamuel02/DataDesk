@@ -32,6 +32,22 @@ export interface Profile {
   last_daily_bonus_at: string | null;
   points: number;
   created_at: string;
+
+  // ── Tier / streak system ──────────────────────────────────────────────────
+  /** Reward tier: 1 = Starter, 2 = Active, 3 = Loyal. Never downgrades. */
+  tier: number;
+  /** Total rewarded ads watched over the account's lifetime. */
+  lifetime_ads: number;
+  /** Consecutive Nigeria-days with at least one ad watched. */
+  current_streak: number;
+  /** Best streak ever reached. */
+  longest_streak: number;
+  /** Timestamp of the most recently watched rewarded ad. */
+  last_ad_watched_at: string | null;
+  /** Ads watched on the current Nigeria day (resets at local midnight). */
+  ads_watched_today: number;
+  /** The Nigeria date (YYYY-MM-DD) the daily counter was last reset/used. */
+  daily_reset_date: string | null;
 }
 
 export interface AdTypeRow {

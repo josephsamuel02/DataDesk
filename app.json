@@ -18,7 +18,10 @@
         "foregroundImage": "./assets/icon.png"
       },
       "package": "com.datadesk.app",
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/icon.png",
@@ -55,6 +58,12 @@
           "photosPermission": "Data Desk needs access to your photos to upload a profile picture."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "6ae52693-7b0a-40e3-8ca0-4e605d8007c6"
+      }
+    }
   }
 }
