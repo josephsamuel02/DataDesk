@@ -57,7 +57,8 @@
         {
           "photosPermission": "Data Desk needs access to your photos to upload a profile picture."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "router": {},
